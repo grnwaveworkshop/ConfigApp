@@ -38,7 +38,9 @@ import profiles                                                          # noqa:
 from client import RobotClient                                           # noqa: E402
 from models import TelemetryFrame, scale_for_key                         # noqa: E402
 from protocol import ProtocolError                                       # noqa: E402
-from transport import SerialTransport                                    # noqa: E402from version import __version__                                          # noqa: E402
+from transport import SerialTransport                                    # noqa: E402
+from version import __version__                                          # noqa: E402
+
 DEBOUNCE_S = 0.12
 DEFAULT_STREAM_HZ = 10
 
