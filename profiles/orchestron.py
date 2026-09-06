@@ -24,11 +24,11 @@ TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [
     ("servoTgt", 0x02, []),                              # RESERVED - not yet emitted
     ("sbus",     0x04, [f"ch{i}" for i in range(12)]),
     ("status",   0x08, ["sbusOk", "sdOk", "masterVol"]),
-    ("pin",      0x10, []),                              # RESERVED
+    ("pin",      0x10, [f"io{i}" for i in range(1, 9)]),  # RC PWM pulse width (us) per IO
     ("seq",      0x20, []),                              # RESERVED
     ("rec",      0x40, []),                              # RESERVED
     ("diag",     0x80, ["freeRam"]),
 ]
-TELEMETRY_MASK_IMPLEMENTED = 0x01 | 0x04 | 0x08 | 0x80
+TELEMETRY_MASK_IMPLEMENTED = 0x01 | 0x04 | 0x08 | 0x10 | 0x80
 
 MODE_NAMES: dict[int, str] = {0: "IDLE", 1: "MANUAL", 2: "CONTROL", 3: "AUTO"}
