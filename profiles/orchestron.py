@@ -20,7 +20,7 @@ SCALE: dict[str, int] = {
 }
 
 TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [
-    ("servo",    0x01, [f"s{i}" for i in range(8)]),
+    ("servo",    0x01, [f"s{i}" for i in range(1, 9)]),  # matches board labels S1-S8
     ("servoTgt", 0x02, []),                              # RESERVED - not yet emitted
     ("sbus",     0x04, [f"ch{i}" for i in range(12)]),
     ("status",   0x08, ["sbusOk", "sdOk", "masterVol"]),
