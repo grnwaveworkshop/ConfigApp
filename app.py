@@ -1,6 +1,6 @@
-"""Robot config app - Dear PyGui desktop UI over the <K...> serial protocol.
-Works against any robot in the family (RX-80B, Orchestron, T4-IMU) - the
-connected robot's profile (telemetry layout + scale table) is auto-detected
+"""Droid config app - Dear PyGui desktop UI over the <K...> serial protocol.
+Works against any Droid in the family (RX-80B, Orchestron, T4-IMU) - the
+connected Droid's profile (telemetry layout + scale table) is auto-detected
 after the param sweep, see profiles/__init__.py.
 
     py app.py
@@ -8,15 +8,15 @@ after the param sweep, see profiles/__init__.py.
 ~200+ config params is too many for one scrolling list, so the Config tab is
 paginated: a left nav of groups derived purely from the key namespaces (see
 pages.py) - no per-project curation table, so a new key prefix in any
-project's ConfigParams.def shows up automatically. Pages whose params
+Droid project's ConfigParams.def shows up automatically. Pages whose params
 naturally split into sub-groups (e.g. "m.headR.*" vs "m.tRing.*") get
 sub-tabs; everything else is one flat table. A search box cuts across all
 pages when you know part of a key name.
 
 The Dashboard tab is also generic: it shows whatever telemetry fields the
-detected profile defines, rather than hardcoding field names for one robot.
+detected profile defines, rather than hardcoding field names for one Droid.
 
-Threading model: all robot I/O runs on a single background worker thread fed
+Threading model: all droid I/O runs on a single background worker thread fed
 by a job queue; the render loop polls shared state, rebuilds the page when
 needed, and flushes debounced edits. Widget *creation* happens only on the
 render-loop (main) thread.
@@ -63,6 +63,7 @@ class AppState:
         self.telemetry: TelemetryFrame | None = None
         self.confirm = ""                      # right-side ack: "\u2713 key=val" / "\u2717 rejected"
         self.unsaved = False                   # True once a set() is confirmed, until Save/Reload
+        self.mtp_active: bool | None = None     # None = unknown (not connected/not queried yet)
 
 
 state = AppState()
@@ -114,6 +115,7 @@ def job_connect(transport) -> None:
         b.set_telemetry_handler(on_telemetry)
         params = b.refresh_params()  # also auto-detects profiles.active
         bot = b
+        mtp = b.mtp_status()
         with state.lock:
             state.connected = True
             state.fw = fw
@@ -122,6 +124,7 @@ def job_connect(transport) -> None:
             state.params_ready = True
             state.nav_built = False
             state.groups_ready = True
+            state.mtp_active = mtp
         set_status(f"Connected - {profiles.active.NAME}, fw {fw // 10000}.{(fw // 100) % 100}.{fw % 100}, "
                    f"{len(params)} params")
     io_q.put(run)
@@ -142,6 +145,7 @@ def job_disconnect() -> None:
             state.nav_built = False
             state.telemetry = None
             state.profile_name = ""
+            state.mtp_active = None
         set_status("Disconnected")
     io_q.put(run)
 
@@ -192,6 +196,21 @@ def job_stream(hz: int, mask: int | None = None) -> None:
             return
         bot.stream(hz, mask)
         set_status(f"Telemetry {hz} Hz" if hz else "Telemetry stopped")
+    io_q.put(run)
+
+
+def job_mtp_toggle() -> None:
+    def run() -> None:
+        if bot is None:
+            return
+        try:
+            entering = not bool(state.mtp_active)
+            active = bot.mtp_enter() if entering else bot.mtp_exit()
+            with state.lock:
+                state.mtp_active = active
+            set_status("MTP mode ON - SD card exposed via USB" if active else "MTP mode OFF")
+        except ProtocolError as e:
+            set_status(f"MTP toggle failed: {e}")
     io_q.put(run)
 
 
@@ -383,7 +402,7 @@ def build_telemetry_groups() -> None:
 
 def build_dashboard_fields(mask: int) -> None:
     """Rebuild the Dashboard's field table for whichever groups are in `mask` -
-    generic across robots, since field names come entirely from the profile."""
+    generic across Droids, since field names come entirely from the profile."""
     global _dash_fields
     dpg.delete_item("dash_fields", children_only=True)
     fields: list[str] = []
@@ -419,6 +438,8 @@ def build_layout() -> None:
             dpg.add_combo([], tag="port_combo", width=250)
             dpg.add_button(label="Refresh", callback=on_refresh_ports)
             dpg.add_button(label="Connect", tag="btn_connect", callback=on_connect)
+            dpg.add_button(label="Enter MTP Mode", tag="btn_mtp", callback=lambda: job_mtp_toggle(),
+                          enabled=False)
             dpg.add_spacer(width=40)
             dpg.add_text("", tag="confirm_text", color=(150, 220, 150))
         dpg.add_text("Disconnected", tag="status_text", color=(200, 200, 120))
@@ -462,7 +483,7 @@ def main() -> int:
     global io_running
     dpg.create_context()
     build_layout()
-    dpg.create_viewport(title=f"Robot Config v{__version__}", width=1100, height=760)
+    dpg.create_viewport(title=f"Droid Config v{__version__}", width=1100, height=760)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.set_primary_window("root", True)
@@ -481,8 +502,11 @@ def main() -> int:
             fr = state.telemetry
             confirm = state.confirm
             unsaved = state.unsaved
+            mtp_active = state.mtp_active
         dpg.set_value("status_text", status)
         dpg.configure_item("btn_connect", label="Disconnect" if connected else "Connect")
+        dpg.configure_item("btn_mtp", enabled=connected,
+                           label="Exit MTP Mode" if mtp_active else "Enter MTP Mode")
         dpg.set_value("confirm_text", confirm)
         dpg.configure_item("confirm_text",
                            color=(220, 120, 120) if confirm.startswith("\u2717") else (150, 220, 150))

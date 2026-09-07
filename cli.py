@@ -17,6 +17,7 @@ Commands:
     stream <hz> [mask]        start/stop telemetry (0 stops)
     sweep                     time a full <KN##> descriptor sweep
     raw <KG44>                send a literal frame body
+    mtp [on|off]              query, or enter/exit, MTP/mass-storage mode
     q                         quit
 """
 from __future__ import annotations
@@ -125,6 +126,13 @@ def main() -> int:
                       f"({dt / max(len(bot.params), 1) * 1000:.1f} ms/key)")
             elif cmd == "raw":
                 print(split_frame(bot.proto.request(parts[1].strip("<>"))))
+            elif cmd == "mtp":
+                if len(parts) > 1 and parts[1].lower() in ("on", "1"):
+                    print("MTP ON" if bot.mtp_enter() else "MTP enter failed")
+                elif len(parts) > 1 and parts[1].lower() in ("off", "0"):
+                    print("MTP OFF" if not bot.mtp_exit() else "MTP exit failed")
+                else:
+                    print("MTP ON" if bot.mtp_status() else "MTP OFF")
             else:
                 print("?")
         except (ProtocolError, IndexError, ValueError) as e:

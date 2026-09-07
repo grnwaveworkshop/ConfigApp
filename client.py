@@ -96,6 +96,28 @@ class RobotClient:
         self.proto.request(f"{CATEGORY}L")
         return self.refresh_params()
 
+    # -- MTP mode ------------------------------------------------------------ #
+    def mtp_status(self) -> bool:
+        """<KM> - query whether MTP/mass-storage mode is currently active."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}M"))
+        if tag.startswith(_ERR):
+            raise ProtocolError(f"mtp_status failed: {tag},{args}")
+        return bool(int(args[0]))
+
+    def mtp_enter(self) -> bool:
+        """<KM1> - enter MTP mode (SD card exposed to the host via USB)."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}M1"))
+        if tag.startswith(_ERR):
+            raise ProtocolError(f"mtp_enter failed: {tag},{args}")
+        return bool(int(args[0]))
+
+    def mtp_exit(self) -> bool:
+        """<KM0> - exit MTP mode, resume normal operation."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}M0"))
+        if tag.startswith(_ERR):
+            raise ProtocolError(f"mtp_exit failed: {tag},{args}")
+        return bool(int(args[0]))
+
     # -- param map ---------------------------------------------------------- #
     def refresh_params(self) -> dict[str, ParamInfo]:
         """Sweep <KN0..N-1> and auto-detect the robot profile from the key
