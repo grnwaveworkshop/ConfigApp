@@ -14,6 +14,9 @@ SIGNATURE_PREFIXES = {"balance", "velocity", "turn", "kin", "phys", "cal", "imu"
 SCALE: dict[str, int] = {
     "velocity.filterAlpha": 1000,
     "velocity.tiltCouple": 1000,
+    "velocity.brake": 100,       # coast-brake multiplier, 150 = 1.50x (fw v0.6.77)
+    "velocity.leanMax": 10,      # max commanded lean, 40 = 4.0 deg (fw v0.6.80)
+    "turn.slipRatio": 100,       # slip give-up ratio, 35 = 0.35
     "cal.offsetX": 100,
     "cal.offsetY": 100,
     "kin.L": 100,

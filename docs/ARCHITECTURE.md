@@ -10,7 +10,8 @@ per robot, and those live in `profiles/`.
 
 ## Wire protocol
 
-Angle-bracket framed commands over USB serial (115200 baud), category letter
+Angle-bracket framed commands over USB serial (115200 baud) or BLE (HM-10 class
+module, transparent UART bridge), category letter
 `'K'` ("keys" - config keys), matching each firmware's `CommandProtocol.hpp`:
 
 ```
@@ -34,7 +35,7 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | File | Responsibility |
 |---|---|
 | `framing.py` | Byte-level `<...>` frame reader, mirrors the firmware's `SerialPacket.hpp` |
-| `transport.py` | `SerialTransport` (pyserial) behind a `Transport` ABC |
+| `transport.py` | `SerialTransport` (pyserial) and `BleTransport` (bleak, HM-10) behind a `Transport` ABC |
 | `protocol.py` | Request/reply correlation + telemetry routing on top of a transport |
 | `client.py` | `RobotClient` - high-level get/set/save/reload/stream API |
 | `models.py` | `ParamInfo`, `TelemetryFrame` - reads scale/telemetry layout from `profiles.active` |

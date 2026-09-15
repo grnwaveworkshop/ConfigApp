@@ -38,7 +38,7 @@ import profiles                                                          # noqa:
 from client import RobotClient                                           # noqa: E402
 from models import TelemetryFrame, scale_for_key                         # noqa: E402
 from protocol import ProtocolError                                       # noqa: E402
-from transport import SerialTransport                                    # noqa: E402
+from transport import HM10_DEFAULT_NAME, BleTransport, SerialTransport   # noqa: E402
 from version import __version__                                          # noqa: E402
 
 DEBOUNCE_S = 0.12
@@ -64,6 +64,8 @@ class AppState:
         self.confirm = ""                      # right-side ack: "\u2713 key=val" / "\u2717 rejected"
         self.unsaved = False                   # True once a set() is confirmed, until Save/Reload
         self.mtp_active: bool | None = None     # None = unknown (not connected/not queried yet)
+        self.ble_devices: list[tuple[str, str]] = []   # last BLE scan result
+        self.ble_ready = False                 # render loop should refill the BLE combo
 
 
 state = AppState()
@@ -99,6 +101,24 @@ def io_worker() -> None:
 # --------------------------------------------------------------------------- #
 # Jobs (worker thread)
 # --------------------------------------------------------------------------- #
+def job_ble_scan() -> None:
+    """BLE discovery. Blocks ~8 s, so it runs on the io worker like every other
+    transport call; the render loop picks the result up via state.ble_ready."""
+    def run() -> None:
+        set_status("Scanning BLE (~8 s) ...")
+        try:
+            found = BleTransport.scan()
+        except ImportError:
+            set_status("ERR: bleak not installed - pip install -r requirements.txt")
+            return
+        with state.lock:
+            state.ble_devices = found
+            state.ble_ready = True
+        set_status(f"BLE scan: {len(found)} device(s) found"
+                   if found else "BLE scan: nothing found (module powered? in range?)")
+    io_q.put(run)
+
+
 def on_telemetry(fr: TelemetryFrame) -> None:
     with state.lock:
         state.telemetry = fr
@@ -255,11 +275,26 @@ def on_connect() -> None:
     if state.connected:
         job_disconnect()
         return
+    if dpg.get_value("chk_ble"):
+        # Combo entries are "<address>  <name>"; with none picked, connect by name.
+        sel = (dpg.get_value("ble_combo") or "").strip()
+        addr = sel.split()[0] if sel else ""
+        job_connect(BleTransport(address=addr))
+        return
     port = dpg.get_value("port_combo")
     if not port:
         set_status("Pick a COM port first")
         return
     job_connect(SerialTransport(port.split()[0], 115200))
+
+
+def on_toggle_ble(sender, app_data) -> None:
+    """Swap the connect bar between the USB port picker and the BLE device picker."""
+    ble = bool(app_data)
+    for tag in ("lbl_port", "port_combo", "btn_refresh"):
+        dpg.configure_item(tag, show=not ble)
+    for tag in ("lbl_ble", "ble_combo", "btn_scan"):
+        dpg.configure_item(tag, show=ble)
 
 
 def on_refresh_ports() -> None:
@@ -434,9 +469,14 @@ def update_dashboard(fr: TelemetryFrame) -> None:
 def build_layout() -> None:
     with dpg.window(tag="root"):
         with dpg.group(horizontal=True):
-            dpg.add_text("Port:")
+            dpg.add_checkbox(label="BLE", tag="chk_ble", callback=on_toggle_ble)
+            dpg.add_text("Port:", tag="lbl_port")
             dpg.add_combo([], tag="port_combo", width=250)
-            dpg.add_button(label="Refresh", callback=on_refresh_ports)
+            dpg.add_button(label="Refresh", tag="btn_refresh", callback=on_refresh_ports)
+            dpg.add_text("Device:", tag="lbl_ble", show=False)
+            dpg.add_combo([], tag="ble_combo", width=250, show=False)
+            dpg.add_button(label="Scan", tag="btn_scan", show=False,
+                           callback=lambda: job_ble_scan())
             dpg.add_button(label="Connect", tag="btn_connect", callback=on_connect)
             dpg.add_button(label="Enter MTP Mode", tag="btn_mtp", callback=lambda: job_mtp_toggle(),
                           enabled=False)
@@ -503,6 +543,14 @@ def main() -> int:
             confirm = state.confirm
             unsaved = state.unsaved
             mtp_active = state.mtp_active
+            ble_devs = state.ble_devices if state.ble_ready else None
+            state.ble_ready = False
+        if ble_devs is not None:
+            items = [f"{a}  {n}" for a, n in ble_devs]
+            dpg.configure_item("ble_combo", items=items)
+            if items:  # preselect the HM-10 if it advertised its default name
+                dpg.set_value("ble_combo", next(
+                    (i for i in items if HM10_DEFAULT_NAME.lower() in i.lower()), items[0]))
         dpg.set_value("status_text", status)
         dpg.configure_item("btn_connect", label="Disconnect" if connected else "Connect")
         dpg.configure_item("btn_mtp", enabled=connected,

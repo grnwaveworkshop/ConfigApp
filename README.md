@@ -2,7 +2,7 @@
 
 One config + telemetry app for an entire robot family — **RX-80B**, **Orchestron**, and **T4-IMU** — instead of three near-identical copies of the same tool.
 
-Connect over USB, and the app automatically figures out which robot it's talking to, pulls its full parameter list, and gives you a live GUI (or a scriptable CLI) to tune it — no reboot required for most changes.
+Connect over USB **or Bluetooth LE**, and the app automatically figures out which robot it's talking to, pulls its full parameter list, and gives you a live GUI (or a scriptable CLI) to tune it — no reboot required for most changes.
 
 ## Why this exists
 
@@ -22,6 +22,7 @@ So there's one app, and a small `profiles/` folder that tells it how to decode t
 - 📊 **Live dashboard** — streamable telemetry at up to 100 Hz, rendered generically from whatever fields the active profile defines.
 - ✅ **Real send/confirm feedback** — you see *sending...* the instant you move a slider, and a clear ✓/✗ once the board actually replies. No more wondering if a change "took."
 - ⚠️ **Unsaved-changes banner** — config edits are live/RAM-only until you hit **Save to SD**; a persistent warning reminds you it isn't durable yet.
+- 📶 **USB or BLE** — wired serial, or wireless to an HM-10 class module (BallBot's `bt.*` link). Same protocol, same app; pick BLE in the connect bar or pass `--ble` to the CLI.
 - 🖥️ **GUI and CLI** — a full Dear PyGui desktop app for interactive tuning, plus a headless REPL for scripting and quick smoke tests.
 - 🧩 **Extensible** — adding support for a fourth robot is a new ~30-line file in `profiles/`, not a new app.
 
@@ -36,9 +37,14 @@ py app.py
 # or headless CLI
 py cli.py --list          # see available COM ports
 py cli.py --port COM5
+
+# wireless (HM-10 / "DSD TECH" BLE module)
+py cli.py --scan-ble      # list nearby BLE devices
+py cli.py --ble           # connect by name
+py cli.py --ble --address 00:35:FF:20:90:DD
 ```
 
-In the GUI: pick a port, hit **Connect**. Once connected, the left nav shows every parameter group; the **Dashboard** tab streams live telemetry.
+In the GUI: pick a port and hit **Connect** — or tick **BLE**, hit **Scan**, pick the module, then **Connect**. Once connected, the left nav shows every parameter group; the **Dashboard** tab streams live telemetry.
 
 In the CLI:
 ```

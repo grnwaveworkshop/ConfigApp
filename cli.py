@@ -2,8 +2,11 @@
 against any robot in the family (RX-80B, Orchestron, T4-IMU); the connected
 robot's profile is auto-detected after the param sweep.
 
-    py app.py --list
-    py app.py --port COM5
+    py cli.py --list                 list serial ports
+    py cli.py --port COM5            connect over USB
+    py cli.py --scan-ble             list nearby BLE devices
+    py cli.py --ble                  connect over BLE by name ("DSD TECH")
+    py cli.py --ble --address <MAC>  connect over BLE by address
 
 Commands:
     ping                      firmware version
@@ -28,7 +31,7 @@ import time
 import profiles
 from client import RobotClient
 from protocol import CATEGORY, ProtocolError, split_frame
-from transport import SerialTransport
+from transport import HM10_DEFAULT_NAME, BleTransport, SerialTransport
 from version import __version__
 
 
@@ -42,6 +45,13 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")
     ap.add_argument("--port", help="serial port, e.g. COM5")
     ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--ble", action="store_true",
+                    help="connect over BLE (HM-10 class module) instead of USB")
+    ap.add_argument("--address", default="",
+                    help="BLE device address; omit to find by --name")
+    ap.add_argument("--name", default=HM10_DEFAULT_NAME,
+                    help=f"BLE device name to match when --address is omitted (default: {HM10_DEFAULT_NAME!r})")
+    ap.add_argument("--scan-ble", action="store_true", help="list nearby BLE devices and exit")
     args = ap.parse_args()
 
     if args.list:
@@ -49,14 +59,39 @@ def main() -> int:
             print(f"  {dev:10s} {desc}")
         return 0
 
-    if not args.port:
-        ap.error("need --port or --list")
-        return 2
+    if args.scan_ble:
+        print("Scanning BLE ...")
+        try:
+            found = BleTransport.scan()
+        except ImportError:
+            print("bleak is not installed - run: pip install -r requirements.txt")
+            return 1
+        except Exception as e:  # no adapter, radio off, permissions ...
+            print(f"BLE scan failed: {e}")
+            return 1
+        for addr, name in found:
+            print(f"  {addr:20s} {name}")
+        if not found:
+            print("  (nothing found)")
+        return 0
 
-    transport = SerialTransport(args.port, args.baud)
+    if args.ble:
+        transport = BleTransport(name=args.name, address=args.address)
+    elif args.port:
+        transport = SerialTransport(args.port, args.baud)
+    else:
+        ap.error("need --port, --ble, --list or --scan-ble")
+        return 2
     bot = RobotClient(transport)
     print(f"Connecting: {transport.describe()} ...")
-    bot.open()
+    try:
+        bot.open()
+    except ImportError:
+        print("bleak is not installed - run: pip install -r requirements.txt")
+        return 1
+    except Exception as e:  # port busy, no BLE adapter, device not found ...
+        print(f"Connect failed: {e}")
+        return 1
 
     try:
         ver = bot.ping()
