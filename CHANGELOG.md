@@ -31,6 +31,12 @@ All notable changes to this project will be documented in this file.
 - **A failed connect no longer leaks the port.** If `ping`/`refresh_params` failed after the
   transport opened, the transport stayed open and held the COM port against the next attempt.
 
+### Verified
+- Development testing used a fake "yankable" transport (nested lock does not deadlock; unplug is
+  self-detected and torn down; Disconnect works on a dead link and a healthy one; jobs go inert
+  afterwards), since this machine could not reproduce a real Windows unplug.
+  **Confirmed on hardware 2026-09-15**: pulling USB mid-session is now detected and recovers.
+
 ---
 
 ## [0.3.0] - 2026-09-15
