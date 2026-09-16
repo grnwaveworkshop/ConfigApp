@@ -40,7 +40,8 @@ import profiles                                                          # noqa:
 from client import RobotClient                                           # noqa: E402
 from models import TelemetryFrame, scale_for_key                         # noqa: E402
 from protocol import ProtocolError                                       # noqa: E402
-from transport import HM10_DEFAULT_NAME, BleTransport, SerialTransport   # noqa: E402
+from transport import (HM10_DEFAULT_NAME, BleTransport,                   # noqa: E402
+                       SerialTransport, TransportError)
 from version import __version__                                          # noqa: E402
 
 DEBOUNCE_S = 0.12
@@ -50,7 +51,9 @@ PLOT_POINTS = 400        # rolling history per series (~20 s at 20 Hz)
 
 class AppState:
     def __init__(self) -> None:
-        self.lock = threading.Lock()
+        # RLock, not Lock: helpers that take the lock are called from code that
+        # already holds it (v0.3.0 deadlocked Disconnect exactly that way).
+        self.lock = threading.RLock()
         self.status = "Disconnected"
         self.connected = False
         self.fw = 0
@@ -141,18 +144,74 @@ def on_telemetry(fr: TelemetryFrame) -> None:
             state.plot_series.setdefault(k, deque(maxlen=PLOT_POINTS)).append(fr.get(k))
 
 
+def link_is_up() -> bool:
+    """True only if we have a client whose transport is actually alive."""
+    return bot is not None and bot.is_open
+
+
+def _force_disconnect(status: str) -> None:
+    """Tear the connection down and get the UI back to a usable state.
+
+    Every step is independently guarded: this has to work when the device has
+    already vanished, which is precisely when the old code gave up half way
+    (a failing stream(0) aborted before close(), leaving the UI stuck on
+    "Connected" with a live Disconnect button that did nothing).
+    """
+    global bot
+    b, bot = bot, None
+    if b is not None:
+        try:
+            b.set_telemetry_handler(None)
+        except Exception:  # noqa: BLE001
+            pass
+        if b.is_open:
+            try:
+                b.stream(0)        # politely stop the firmware streaming
+            except Exception:      # noqa: BLE001 - expected on a dead link
+                pass
+        try:
+            b.close()
+        except Exception:  # noqa: BLE001
+            pass
+    with state.lock:
+        state.connected = False
+        state.params = []
+        state.nav_built = False
+        state.telemetry = None
+        state.profile_name = ""
+        state.mtp_active = None
+        state.dirty.clear()        # drop queued edits; they can never land now
+    _reset_plot_buffers()
+    set_status(status)
+
+
 def job_connect(transport) -> None:
     def run() -> None:
         global bot
         set_status(f"Connecting {transport.describe()} ...")
         b = RobotClient(transport)
+        # Report a link that dies on its own (cable pulled, BLE dropped). The
+        # callback fires on a background thread, so hand the teardown to the io
+        # worker rather than doing it there - closing a transport from inside
+        # its own reader thread would try to join itself.
+        transport.set_on_lost(
+            lambda reason: io_q.put(lambda: _force_disconnect(f"Connection lost - {reason}")))
         b.open()
-        fw = b.ping()
-        set_status(f"Loading {b.count()} params ...")
-        b.set_telemetry_handler(on_telemetry)
-        params = b.refresh_params()  # also auto-detects profiles.active
+        try:
+            fw = b.ping()
+            set_status(f"Loading {b.count()} params ...")
+            b.set_telemetry_handler(on_telemetry)
+            params = b.refresh_params()  # also auto-detects profiles.active
+            mtp = b.mtp_status()
+        except Exception:
+            # Never leave an opened-but-unusable transport behind: it holds the
+            # COM port and blocks the next connect attempt.
+            try:
+                b.close()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         bot = b
-        mtp = b.mtp_status()
         with state.lock:
             state.connected = True
             state.fw = fw
@@ -168,29 +227,12 @@ def job_connect(transport) -> None:
 
 
 def job_disconnect() -> None:
-    def run() -> None:
-        global bot
-        if bot is not None:
-            try:
-                bot.stream(0)
-                bot.close()
-            finally:
-                bot = None
-        with state.lock:
-            state.connected = False
-            state.params = []
-            state.nav_built = False
-            state.telemetry = None
-            state.profile_name = ""
-            _reset_plot_buffers()
-            state.mtp_active = None
-        set_status("Disconnected")
-    io_q.put(run)
+    io_q.put(lambda: _force_disconnect("Disconnected"))
 
 
 def job_set(key: str, val: int) -> None:
     def run() -> None:
-        if bot is None:
+        if not link_is_up():
             return
         try:
             got = bot.set(key, val)
@@ -204,7 +246,7 @@ def job_set(key: str, val: int) -> None:
 
 def job_save() -> None:
     def run() -> None:
-        if bot is None:
+        if not link_is_up():
             return
         ok = bot.save()
         set_status("Saved to SD (config.ini)" if ok else "SAVE FAILED")
@@ -216,7 +258,7 @@ def job_save() -> None:
 
 def job_reload() -> None:
     def run() -> None:
-        if bot is None:
+        if not link_is_up():
             return
         params = bot.reload()
         with state.lock:
@@ -230,7 +272,7 @@ def job_reload() -> None:
 
 def job_stream(hz: int, mask: int | None = None) -> None:
     def run() -> None:
-        if bot is None:
+        if not link_is_up():
             return
         bot.stream(hz, mask)
         set_status(f"Telemetry {hz} Hz" if hz else "Telemetry stopped")
@@ -239,7 +281,7 @@ def job_stream(hz: int, mask: int | None = None) -> None:
 
 def job_mtp_toggle() -> None:
     def run() -> None:
-        if bot is None:
+        if not link_is_up():
             return
         try:
             entering = not bool(state.mtp_active)
@@ -332,6 +374,10 @@ def on_apply_hz() -> None:
 
 
 def flush_dirty() -> None:
+    if not link_is_up():
+        with state.lock:
+            state.dirty.clear()
+        return
     now = time.time()
     due: list[tuple[str, int]] = []
     with state.lock:

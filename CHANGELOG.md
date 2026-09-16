@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-09-15
+
+### Fixed
+- **Unplugging the USB cable left the app stuck "Connected", and Disconnect hung it.** Four
+  separate faults, all on that one path:
+  - **Deadlock (regression, v0.3.0).** `state.lock` is a plain `threading.Lock`, and
+    `job_disconnect()` called `_reset_plot_buffers()` - which takes the lock - from inside a
+    `with state.lock:` block. The first press of Disconnect blocked the io worker forever, so
+    every later job queued behind it and the app appeared frozen. The nesting is gone and the
+    lock is now an `RLock`, since a coarse state lock guarded by many `with` blocks makes this
+    easy to reintroduce.
+  - **A dead link was invisible.** `SerialTransport._read_loop` swallowed the error and let its
+    thread die silently, and pyserial's `is_open` stays `True` after the device is gone, so
+    nothing could tell "idle" from "unplugged". Transports now mark themselves failed and report
+    it through a new `set_on_lost()` callback; `is_open` honours that flag. The app tears the
+    connection down by itself and shows `Connection lost - ...`.
+  - **Teardown gave up half way.** `job_disconnect()` ran `stream(0)` before `close()`; on a dead
+    port that write raises, so `close()` never ran and the state block that clears
+    `connected` was skipped - leaving a live Disconnect button that did nothing. Teardown is now
+    one shared `_force_disconnect()` with every step independently guarded, so it always
+    finishes and always releases the port.
+  - **Backlog after the failure.** Queued requests each waited out the full 1.5 s timeout.
+    `Protocol.request()` now fails fast on a link known to be down, and all jobs plus
+    `flush_dirty()` check the link first (pending edits are dropped, since they can never land).
+- **BLE link loss is detected too**, via bleak's `disconnected_callback`, and failed BLE writes
+  now surface instead of vanishing into a fire-and-forget future.
+- **A failed connect no longer leaks the port.** If `ping`/`refresh_params` failed after the
+  transport opened, the transport stayed open and held the COM port against the next attempt.
+
+---
+
 ## [0.3.0] - 2026-09-15
 
 ### Added

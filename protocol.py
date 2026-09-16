@@ -16,7 +16,7 @@ import threading
 from collections.abc import Callable
 
 from framing import FrameReader
-from transport import Transport
+from transport import Transport, TransportError
 
 # Category letter. Must match kCmdCategory in each project's CommandProtocol.hpp.
 # 'K' for "keys" (config keys) - deliberately not a project name, since one
@@ -59,14 +59,25 @@ class Protocol:
 
     def send(self, body: str) -> None:
         """Fire-and-forget a command (e.g. <KR20> stream-rate)."""
-        self.t.write(f"<{body}>".encode("ascii"))
+        try:
+            self.t.write(f"<{body}>".encode("ascii"))
+        except TransportError as e:
+            raise ProtocolError(str(e)) from e
 
     def request(self, body: str, timeout: float = 1.5) -> str:
         """Send <body> and return the next non-telemetry reply frame."""
+        # Fail fast on a known-dead link: without this every queued request
+        # still waits out the full timeout, which is what makes the UI feel
+        # hung after the cable is pulled.
+        if not self.t.is_open:
+            raise ProtocolError("link is down")
         with self._lock:
             while not self._resp.empty():  # drop stale replies
                 self._resp.get_nowait()
-            self.t.write(f"<{body}>".encode("ascii"))
+            try:
+                self.t.write(f"<{body}>".encode("ascii"))
+            except TransportError as e:
+                raise ProtocolError(str(e)) from e
             try:
                 return self._resp.get(timeout=timeout)
             except queue.Empty as e:
