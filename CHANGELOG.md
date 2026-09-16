@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-09-15
+
+### Added
+- **Profile-driven Dashboard** - restores the richer layout the per-project tools had, without
+  giving up the universal design. A profile may now define `DASHBOARD` with `panels`
+  (titled groups of labelled, individually formatted fields), `plots` (rolling line plots) and
+  `state_labels`. Profiles without it keep the generic flat grid, verified unchanged for
+  Orchestron (32 fields) and RX-80B (17 fields).
+- **T4-IMU dashboard**: 8 panels (Attitude, Rates, Velocity command vs actual, Control output,
+  Motors, Encoders, Loop health, SBUS) and 3 rolling plots (Attitude; Velocity command vs actual;
+  Control output - balance vs velocity). The last two are the pair that matter when tuning stops
+  and drift. Plots buffer 400 points per series and use the firmware `ms` field as the time base
+  rather than UI wall-clock, so a laggy render loop cannot distort them.
+- Panels and plot series whose telemetry group is unchecked are dropped automatically, so the
+  spec never has to agree with the group mask.
+
+### Fixed
+- **T4-IMU state was mislabelled.** Its telemetry `state` is `BtStateCode()` in the firmware
+  (0=SAFE 1=LOOP-ON 2=ARMED 3=E-STOP 4=TILT), not the family's 0..3
+  IDLE/MANUAL/CONTROL/AUTO - so the dashboard showed an **emergency stop as "AUTO"**, and a tilt
+  trip as "?". Correct labels and colours restored (E-STOP red, TILT orange), carried in the
+  profile where the divergence belongs.
+
+---
+
 ## [0.2.0] - 2026-09-15
 
 ### Added

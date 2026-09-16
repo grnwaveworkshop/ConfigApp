@@ -19,7 +19,7 @@ So there's one app, and a small `profiles/` folder that tells it how to decode t
 
 - 🔍 **Auto-detection** — connects, sweeps the parameter table, matches key-prefix "fingerprints" against known robots, and picks the right profile. No manual robot selection.
 - 🗂️ **Zero-config pagination** — ~200+ parameters organized into navigable groups and sub-tabs, derived entirely from key structure.
-- 📊 **Live dashboard** — streamable telemetry at up to 100 Hz, rendered generically from whatever fields the active profile defines.
+- 📊 **Live dashboard** — streamable telemetry at up to 100 Hz. Profiles can declare titled panels and rolling plots (T4-IMU does); anything without a spec still renders generically from whatever fields it streams.
 - ✅ **Real send/confirm feedback** — you see *sending...* the instant you move a slider, and a clear ✓/✗ once the board actually replies. No more wondering if a change "took."
 - ⚠️ **Unsaved-changes banner** — config edits are live/RAM-only until you hit **Save to SD**; a persistent warning reminds you it isn't durable yet.
 - 📶 **USB or BLE** — wired serial, or wireless to an HM-10 class module (BallBot's `bt.*` link). Same protocol, same app; pick BLE in the connect bar or pass `--ble` to the CLI.

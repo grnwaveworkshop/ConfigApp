@@ -40,7 +40,7 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `client.py` | `RobotClient` - high-level get/set/save/reload/stream API |
 | `models.py` | `ParamInfo`, `TelemetryFrame` - reads scale/telemetry layout from `profiles.active` |
 | `pages.py` | Turns the flat param list into nav pages, purely from key-prefix structure |
-| `profiles/` | Per-robot telemetry layout + scale table + signature keys (see below) |
+| `profiles/` | Per-robot telemetry layout + scale table + signature keys + optional Dashboard spec (see below) |
 | `app.py` | Dear PyGui desktop UI |
 | `cli.py` | Headless REPL for scripting/smoke tests |
 

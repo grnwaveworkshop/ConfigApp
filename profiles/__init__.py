@@ -7,8 +7,20 @@ that actually differs per robot is:
   - which config keys use a display scale (SCALE)
   - the telemetry field layout baked into each firmware's EmitTelemetry()
     (TELEMETRY_GROUPS / TELEMETRY_MASK_IMPLEMENTED)
-  - operating mode names (MODE_NAMES) - same 0..3 IDLE/MANUAL/CONTROL/AUTO
-    convention so far, but kept per-profile in case a robot diverges
+  - operating mode names (MODE_NAMES) - the 0..3 IDLE/MANUAL/CONTROL/AUTO
+    convention is only a default; T4-IMU genuinely diverges (0=SAFE 1=LOOP-ON
+    2=ARMED 3=E-STOP 4=TILT), which is exactly why this is per-profile
+  - an OPTIONAL richer Dashboard layout (DASHBOARD). Without it a profile gets
+    the generic flat "key: value" grid, which is still the right answer for a
+    Droid nobody has curated yet. With it you get titled panels and rolling
+    plots:
+        DASHBOARD = {
+          "state_labels": {code: (label, (r, g, b)), ...},   # optional
+          "panels": [(title, [(key, label, "{:+8.2f}"), ...]), ...],
+          "plots":  [(title, y_label, [(key, series_label), ...]), ...],
+        }
+    Panels and plot series whose key is not in the active telemetry mask are
+    dropped automatically, so the spec never has to track the group checkboxes
 
 `detect()` picks a profile after a param sweep by matching each profile's
 SIGNATURE_PREFIXES against the key prefixes actually present - no firmware

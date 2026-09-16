@@ -13,8 +13,9 @@ naturally split into sub-groups (e.g. "m.headR.*" vs "m.tRing.*") get
 sub-tabs; everything else is one flat table. A search box cuts across all
 pages when you know part of a key name.
 
-The Dashboard tab is also generic: it shows whatever telemetry fields the
-detected profile defines, rather than hardcoding field names for one Droid.
+The Dashboard tab is profile-driven: a profile with a DASHBOARD spec gets
+titled panels plus rolling plots; one without gets a generic grid of
+whatever telemetry fields it streams.
 
 Threading model: all droid I/O runs on a single background worker thread fed
 by a job queue; the render loop polls shared state, rebuilds the page when
@@ -27,6 +28,7 @@ import queue
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -43,6 +45,7 @@ from version import __version__                                          # noqa:
 
 DEBOUNCE_S = 0.12
 DEFAULT_STREAM_HZ = 10
+PLOT_POINTS = 400        # rolling history per series (~20 s at 20 Hz)
 
 
 class AppState:
@@ -64,6 +67,9 @@ class AppState:
         self.confirm = ""                      # right-side ack: "\u2713 key=val" / "\u2717 rejected"
         self.unsaved = False                   # True once a set() is confirmed, until Save/Reload
         self.mtp_active: bool | None = None     # None = unknown (not connected/not queried yet)
+        self.plot_t: deque = deque(maxlen=PLOT_POINTS)          # seconds since first sample
+        self.plot_series: dict[str, deque] = {}                 # key -> rolling values
+        self.plot_t0: float | None = None                       # firmware ms of first sample
         self.ble_devices: list[tuple[str, str]] = []   # last BLE scan result
         self.ble_ready = False                 # render loop should refill the BLE combo
 
@@ -122,6 +128,17 @@ def job_ble_scan() -> None:
 def on_telemetry(fr: TelemetryFrame) -> None:
     with state.lock:
         state.telemetry = fr
+        if not _plot_keys:
+            return
+        # Firmware `ms` is the honest time base (the UI thread may lag); fall back
+        # to sample count if a profile ever omits it.
+        ms = fr.raw.get("ms")
+        if state.plot_t0 is None:
+            state.plot_t0 = ms if ms is not None else 0.0
+        t = ((ms - state.plot_t0) / 1000.0) if ms is not None else float(len(state.plot_t))
+        state.plot_t.append(t)
+        for k in _plot_keys:
+            state.plot_series.setdefault(k, deque(maxlen=PLOT_POINTS)).append(fr.get(k))
 
 
 def job_connect(transport) -> None:
@@ -165,6 +182,7 @@ def job_disconnect() -> None:
             state.nav_built = False
             state.telemetry = None
             state.profile_name = ""
+            _reset_plot_buffers()
             state.mtp_active = None
         set_status("Disconnected")
     io_q.put(run)
@@ -330,6 +348,10 @@ def flush_dirty() -> None:
 # --------------------------------------------------------------------------- #
 _nav_tags: list[str] = []
 _dash_fields: list[str] = []
+# Dashboard render state, rebuilt by build_dashboard_fields():
+_dash_items: list[tuple[str, str, str]] = []   # (item tag, telemetry key, format)
+_plot_keys: set[str] = set()                   # keys the worker thread must buffer
+_plot_axes: list[int] = []                     # indices of the plots actually built
 
 LABEL_W, SLIDER_W, INPUT_W, SCALED_W = 220, 260, 110, 60
 
@@ -435,32 +457,129 @@ def build_telemetry_groups() -> None:
     build_dashboard_fields(profiles.active.TELEMETRY_MASK_IMPLEMENTED)
 
 
+def _reset_plot_buffers() -> None:
+    """Drop rolling history (called on connect/disconnect and on a layout rebuild)."""
+    with state.lock:
+        state.plot_t.clear()
+        state.plot_series.clear()
+        state.plot_t0 = None
+
+
 def build_dashboard_fields(mask: int) -> None:
-    """Rebuild the Dashboard's field table for whichever groups are in `mask` -
-    generic across Droids, since field names come entirely from the profile."""
-    global _dash_fields
+    """Rebuild the Dashboard for whichever telemetry groups are in `mask`.
+
+    A profile may define DASHBOARD (see profiles/__init__.py) to get titled
+    panels plus rolling plots; without it the generic flat "key: value" grid is
+    used, so a Droid with no dashboard spec still shows everything it streams.
+    Panels and plot series whose field is not in `mask` are dropped, so the spec
+    never has to stay in sync with the group checkboxes.
+    """
+    global _dash_fields, _dash_items, _plot_keys, _plot_axes
     dpg.delete_item("dash_fields", children_only=True)
-    fields: list[str] = []
+    dpg.delete_item("dash_plots", children_only=True)
+
+    enabled: list[str] = []
     for _name, bit, group_fields in profiles.active.TELEMETRY_GROUPS:
         if mask & bit:
-            fields.extend(group_fields)
-    _dash_fields = fields
-    cols = 4  # keeps it compact for the wider telemetry groups
+            enabled.extend(group_fields)
+    enabled_set = set(enabled)
+    _dash_fields = enabled
+    _dash_items = []
+    _plot_keys = set()
+    _plot_axes = []
+
+    spec = getattr(profiles.active, "DASHBOARD", None)
+    panels = [(title, [f for f in fields if f[0] in enabled_set])
+              for title, fields in (spec or {}).get("panels", [])] if spec else []
+    panels = [(t, f) for t, f in panels if f]
+
+    if not panels:
+        # Generic fallback: flat grid of every streamed field.
+        cols = 4
+        with dpg.table(parent="dash_fields", header_row=False,
+                       policy=dpg.mvTable_SizingFixedFit, row_background=True):
+            for _ in range(cols):
+                dpg.add_table_column(init_width_or_weight=130, width_fixed=True)
+            for row_start in range(0, len(enabled), cols):
+                with dpg.table_row():
+                    for f in enabled[row_start:row_start + cols]:
+                        dpg.add_text(f"{f}: -", tag=f"d_{f}")
+                        _dash_items.append((f"d_{f}", f, f + ": {:g}"))
+        return
+
+    # Two panels per row keeps it readable without a very tall window.
     with dpg.table(parent="dash_fields", header_row=False,
-                   policy=dpg.mvTable_SizingFixedFit, row_background=True):
-        for _ in range(cols):
-            dpg.add_table_column(init_width_or_weight=130, width_fixed=True)
-        for row_start in range(0, len(fields), cols):
+                   policy=dpg.mvTable_SizingStretchProp, borders_innerV=True):
+        dpg.add_table_column()
+        dpg.add_table_column()
+        for i in range(0, len(panels), 2):
             with dpg.table_row():
-                for f in fields[row_start:row_start + cols]:
-                    dpg.add_text(f"{f}: -", tag=f"d_{f}")
+                for title, fields in panels[i:i + 2]:
+                    with dpg.group():
+                        dpg.add_text(title, color=(150, 200, 255))
+                        with dpg.table(header_row=False, policy=dpg.mvTable_SizingFixedFit,
+                                       row_background=True):
+                            dpg.add_table_column(init_width_or_weight=125, width_fixed=True)
+                            dpg.add_table_column(init_width_or_weight=95, width_fixed=True)
+                            for key, label, fmt in fields:
+                                with dpg.table_row():
+                                    dpg.add_text(label)
+                                    dpg.add_text("-", tag=f"d_{key}")
+                                    _dash_items.append((f"d_{key}", key, fmt))
+                if len(panels[i:i + 2]) == 1:
+                    dpg.add_text("")   # keep the row shape
+
+    for idx, (title, ylabel, series) in enumerate((spec or {}).get("plots", [])):
+        series = [(k, lbl) for k, lbl in series if k in enabled_set]
+        if not series:
+            continue
+        with dpg.plot(parent="dash_plots", label=title, height=210, width=-1):
+            dpg.add_plot_legend()
+            dpg.add_plot_axis(dpg.mvXAxis, label="t (s)", tag=f"plx_{idx}")
+            with dpg.plot_axis(dpg.mvYAxis, label=ylabel, tag=f"ply_{idx}"):
+                for key, lbl in series:
+                    dpg.add_line_series([], [], label=lbl, tag=f"ser_{idx}_{key}")
+                    _plot_keys.add(key)
+        _plot_axes.append(idx)
+    _reset_plot_buffers()
 
 
 def update_dashboard(fr: TelemetryFrame) -> None:
-    dpg.set_value("d_mode", f"Mode: {fr.mode_name}")
-    for f in _dash_fields:
-        if dpg.does_item_exist(f"d_{f}"):
-            dpg.set_value(f"d_{f}", f"{f}: {fr.get(f):g}")
+    spec = getattr(profiles.active, "DASHBOARD", None)
+    labels = (spec or {}).get("state_labels") if spec else None
+    if labels:
+        label, color = labels.get(int(fr.raw.get("mode", -1)), ("?", (200, 200, 200)))
+        dpg.set_value("d_mode", f"State: {label}")
+        dpg.configure_item("d_mode", color=color)
+    else:
+        dpg.set_value("d_mode", f"Mode: {fr.mode_name}")
+    for tag, key, fmt in _dash_items:
+        if dpg.does_item_exist(tag):
+            try:
+                dpg.set_value(tag, fmt.format(fr.get(key)))
+            except (ValueError, TypeError):
+                dpg.set_value(tag, f"{fr.get(key):g}")
+
+
+def update_plots() -> None:
+    """Push the rolling buffers into the line series (main thread only)."""
+    if not _plot_keys:
+        return
+    with state.lock:
+        xs = list(state.plot_t)
+        data = {k: list(v) for k, v in state.plot_series.items()}
+    if len(xs) < 2:
+        return
+    for idx in _plot_axes:
+        for key in _plot_keys:
+            tag = f"ser_{idx}_{key}"
+            ys = data.get(key)
+            if ys and dpg.does_item_exist(tag):
+                n = min(len(xs), len(ys))
+                dpg.set_value(tag, [xs[-n:], ys[-n:]])
+        if dpg.does_item_exist(f"plx_{idx}"):
+            dpg.set_axis_limits(f"plx_{idx}", xs[0], xs[-1])
+            dpg.fit_axis_data(f"ply_{idx}")
 
 
 # --------------------------------------------------------------------------- #
@@ -515,8 +634,11 @@ def build_layout() -> None:
                 dpg.add_text("Groups:", color=(160, 160, 160))
                 dpg.add_group(horizontal=True, tag="telemetry_groups")
                 dpg.add_separator()
-                dpg.add_text("Mode: -", tag="d_mode")
-                dpg.add_group(tag="dash_fields")
+                dpg.add_text("State: -", tag="d_mode")
+                with dpg.child_window(border=False, height=-1):
+                    dpg.add_group(tag="dash_fields")
+                    dpg.add_spacer(height=6)
+                    dpg.add_group(tag="dash_plots")
 
 
 def main() -> int:
@@ -578,6 +700,7 @@ def main() -> int:
             update_dashboard(fr)
             with state.lock:
                 state.telemetry = None
+        update_plots()
 
         flush_dirty()
         dpg.render_dearpygui_frame()
