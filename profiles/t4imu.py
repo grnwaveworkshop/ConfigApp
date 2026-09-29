@@ -25,6 +25,17 @@ SCALE: dict[str, int] = {
     "phys.rWheel": 1000,
     "phys.gearRatio": 1000,
     "phys.fkScale": 1000,
+    # LQR programme (fw v0.6.82)
+    "est.alpha": 1000,           # fast-estimator EMA, 300 = 0.300
+    "lqr.kxPhi": 10,             # LQR gains are x10, command per SI unit
+    "lqr.kxTheta": 10,
+    "lqr.kxPhiDot": 10,
+    "lqr.kxThetaDot": 10,
+    "lqr.kyPhi": 10,
+    "lqr.kyTheta": 10,
+    "lqr.kyPhiDot": 10,
+    "lqr.kyThetaDot": 10,
+    "lqr.outScale": 1000,        # 1000 = 1.000 = gains as designed; never actuate < 0.5
 }
 
 TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [

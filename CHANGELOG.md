@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-09-28
+
+### Added
+- **T4-IMU profile: display scales for the BallBot v0.6.82 LQR keys** - `est.alpha` (x1000),
+  the eight `lqr.kx*` / `lqr.ky*` gains (x10) and `lqr.outScale` (x1000). The remaining new keys
+  (`control.shadow`, `control.swapMs`, `est.rate100`, `lqr.phiErrMax`, `sysid.mode`,
+  `sysid.ditherAmp`) are unscaled integers and need no entry.
+
 ## [0.3.1] - 2026-09-15
 
 ### Fixed
