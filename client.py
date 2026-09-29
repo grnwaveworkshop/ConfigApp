@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import models
 import profiles
 from models import ParamInfo, TelemetryFrame
 from protocol import CATEGORY, Protocol, ProtocolError, split_frame
@@ -60,10 +61,17 @@ class RobotClient:
         tag, args = split_frame(self.proto.request(f"{CATEGORY}N{key_id}"))
         if tag.startswith(_ERR):
             raise ProtocolError(f"describe {key_id} failed: {tag},{args}")
-        # KN##,min,max,val,key
+        # KN##,min,max,val,key[,scale] - scale is optional (older firmware omits it)
         vmin, vmax, val = int(args[0]), int(args[1]), int(args[2])
         key = args[3]
-        return ParamInfo(id=key_id, key=key, vmin=vmin, vmax=vmax, value=val)
+        fw_scale = None
+        if len(args) > 4:
+            try:
+                fw_scale = max(1, int(args[4]))
+            except ValueError:
+                pass
+        return ParamInfo(id=key_id, key=key, vmin=vmin, vmax=vmax, value=val,
+                         fw_scale=fw_scale)
 
     def get(self, key_or_id: str | int) -> int:
         kid = self._to_id(key_or_id)
@@ -136,6 +144,8 @@ class RobotClient:
             by_id[i] = info
         self.params = params
         self.params_by_id = by_id
+        models.FW_SCALE.clear()
+        models.FW_SCALE.update({k: p.fw_scale for k, p in params.items() if p.fw_scale})
         profiles.active = profiles.detect({p.group for p in params.values()})
         return params
 

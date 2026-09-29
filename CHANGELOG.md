@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-09-28
+
+### Changed
+- **Display scales come from the firmware, not from the app.** `<KN>` descriptors may now carry a
+  6th field, the key's display divisor (`<KN##,min,max,val,key,scale>`; BallBot T4-IMU v0.6.83+).
+  When present it is authoritative: `ParamInfo.fw_scale`, and `models.FW_SCALE` for the value
+  column, both filled by `refresh_params()`. A new scaled key in firmware therefore shows
+  correctly with no app change. Firmware that does not send it (Orchestron, RX-80B, BallBot
+  before v0.6.83) falls back to the profile `SCALE` table exactly as before.
+- T4-IMU profile `SCALE` is now a frozen fallback for pre-v0.6.83 firmware and should not be
+  extended (it replaces the per-key additions made in 0.3.2).
+
 ## [0.3.2] - 2026-09-28
 
 ### Added

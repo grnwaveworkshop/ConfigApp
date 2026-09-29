@@ -1,9 +1,11 @@
 """Data models: param descriptors + telemetry, shared across the robot family.
 
 Wire values are raw integers (each firmware's x10/x100/x1000 storage
-conventions where they apply). Scale and telemetry field layout differ per
-robot, so both are read from `profiles.active` (see profiles/__init__.py),
-which client.py sets after a param sweep auto-detects which robot is connected.
+conventions where they apply). The display scale comes from the firmware itself
+when its <KN> descriptor carries one (6th field, BallBot v0.6.83+); only older
+firmware falls back to the per-profile SCALE table. Telemetry field layout is
+read from `profiles.active` (see profiles/__init__.py), which client.py sets
+after a param sweep auto-detects which robot is connected.
 """
 from __future__ import annotations
 
@@ -12,8 +14,16 @@ from dataclasses import dataclass, field
 import profiles
 
 
+# Scales reported by the firmware in the last param sweep, keyed by config key.
+# Filled by client.refresh_params(); authoritative over profiles.active.SCALE.
+FW_SCALE: dict[str, int] = {}
+
+
 def scale_for_key(key: str) -> int:
-    return profiles.active.SCALE.get(key, 1)
+    s = FW_SCALE.get(key)
+    if s is not None:
+        return s
+    return profiles.active.SCALE.get(key, 1)   # legacy firmware without a scale field
 
 
 @dataclass
@@ -23,6 +33,7 @@ class ParamInfo:
     vmin: int
     vmax: int
     value: int
+    fw_scale: int | None = None     # from the firmware's <KN> descriptor, if it sends one
 
     @property
     def group(self) -> str:
@@ -33,7 +44,7 @@ class ParamInfo:
 
     @property
     def scale(self) -> int:
-        return scale_for_key(self.key)
+        return self.fw_scale if self.fw_scale else scale_for_key(self.key)
 
     def human(self, raw: int | None = None) -> float:
         v = self.value if raw is None else raw

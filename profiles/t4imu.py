@@ -11,12 +11,15 @@ NAME = "T4-IMU"
 # ConfigParams.def.
 SIGNATURE_PREFIXES = {"balance", "velocity", "turn", "kin", "phys", "cal", "imu", "move"}
 
+# Fallback ONLY for firmware older than v0.6.83. Since v0.6.83 each key's scale is a column
+# in the firmware's ConfigParams.def and arrives in the <KN> descriptor, which wins over this
+# table - so new or changed keys need no entry here. Frozen at the v0.6.82 set; do not extend.
 SCALE: dict[str, int] = {
     "velocity.filterAlpha": 1000,
     "velocity.tiltCouple": 1000,
-    "velocity.brake": 100,       # coast-brake multiplier, 150 = 1.50x (fw v0.6.77)
-    "velocity.leanMax": 10,      # max commanded lean, 40 = 4.0 deg (fw v0.6.80)
-    "turn.slipRatio": 100,       # slip give-up ratio, 35 = 0.35
+    "velocity.brake": 100,
+    "velocity.leanMax": 10,
+    "turn.slipRatio": 100,
     "cal.offsetX": 100,
     "cal.offsetY": 100,
     "kin.L": 100,
@@ -25,17 +28,10 @@ SCALE: dict[str, int] = {
     "phys.rWheel": 1000,
     "phys.gearRatio": 1000,
     "phys.fkScale": 1000,
-    # LQR programme (fw v0.6.82)
-    "est.alpha": 1000,           # fast-estimator EMA, 300 = 0.300
-    "lqr.kxPhi": 10,             # LQR gains are x10, command per SI unit
-    "lqr.kxTheta": 10,
-    "lqr.kxPhiDot": 10,
-    "lqr.kxThetaDot": 10,
-    "lqr.kyPhi": 10,
-    "lqr.kyTheta": 10,
-    "lqr.kyPhiDot": 10,
-    "lqr.kyThetaDot": 10,
-    "lqr.outScale": 1000,        # 1000 = 1.000 = gains as designed; never actuate < 0.5
+    "est.alpha": 1000,
+    "lqr.kxPhi": 10, "lqr.kxTheta": 10, "lqr.kxPhiDot": 10, "lqr.kxThetaDot": 10,
+    "lqr.kyPhi": 10, "lqr.kyTheta": 10, "lqr.kyPhiDot": 10, "lqr.kyThetaDot": 10,
+    "lqr.outScale": 1000,
 }
 
 TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [

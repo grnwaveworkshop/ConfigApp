@@ -17,7 +17,7 @@ module, transparent UART bridge), category letter
 ```
 <KP>          -> <KP,fwIntVersion>          ping / liveness
 <KC>          -> <KC,count>                 number of config keys
-<KN##>        -> <KN##,min,max,val,key>     descriptor of key id ##
+<KN##>        -> <KN##,min,max,val,key[,scale]>  descriptor of key id ##; scale = display divisor (optional)
 <KG##>        -> <KG##,value>               get value of key id ##
 <KS##,value>  -> <KS##,value> | <KE##,code> set value (live, RAM only)
 <KW>          -> <KW,1|0>                   write config to SD (config.ini)
@@ -65,7 +65,9 @@ layout differs per robot. `profiles/<robot>.py` defines, per robot:
 - `NAME` - display name
 - `SIGNATURE_PREFIXES` - key prefixes unique to that robot (e.g. `hero`/`lift`
   for RX-80B, `stormtrooper` for Orchestron, `balance`/`velocity`/... for T4-IMU)
-- `SCALE` - display divisor per key (raw wire value / divisor = human value)
+- `SCALE` - display divisor per key (raw wire value / divisor = human value). **Fallback only**: a
+  firmware that sends `scale` in `<KN>` (BallBot v0.6.83+) is authoritative, so the table is only
+  used for firmware that doesn't yet. Goal: every firmware sends it and these tables go away.
 - `TELEMETRY_GROUPS` - `(name, bitmask, [field names])` matching the
   firmware's `kTele*` enum and `EmitTelemetry()` field order
 - `TELEMETRY_MASK_IMPLEMENTED` - which groups the firmware actually emits
