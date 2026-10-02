@@ -18,6 +18,8 @@ module, transparent UART bridge), category letter
 <KP>          -> <KP,fwIntVersion>          ping / liveness
 <KC>          -> <KC,count>                 number of config keys
 <KN##>        -> <KN##,min,max,val,key[,scale]>  descriptor of key id ##; scale = display divisor (optional)
+<KD##>        -> <KD##,text>                     one-line description of key id ## (BallBot v0.6.94+;
+                                                 older firmware answers <KE##,1> and is not asked again)
 <KG##>        -> <KG##,value>               get value of key id ##
 <KS##,value>  -> <KS##,value> | <KE##,code> set value (live, RAM only)
 <KW>          -> <KW,1|0>                   write config to SD (config.ini)

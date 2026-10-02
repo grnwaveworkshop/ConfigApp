@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-10-01
+
+### Added
+- **Parameter descriptions in the row tooltip.** BallBot firmware v0.6.94 answers `<KD##>` with a
+  key's one-line description (`client.describe_text()`):
+  - **When fetched:** in the background for the page on screen, one key per io job, so an edit
+    queued meanwhile isn't held up. Nothing is fetched at connect, so connecting over BLE is as
+    fast as before.
+  - **Cache:** `~/.droid_config/desc_<profile>_<fw>.json`, fetched once per robot and firmware
+    version.
+  - **Older firmware:** it answers with an error frame; the app stops after that first request
+    and shows key, id and range as before.
+
+### Changed
+- **Pages and sub-tabs follow the firmware's key order**, not alphabetical. BallBot v0.6.94 lists
+  `ctrl`, `est` and `cal` first. This also changes the page order on RX-80B and Orchestron, to
+  their `ConfigParams.def` order.
+- The id-0 `none` placeholder is hidden.
+- T4-IMU detection also recognises the v0.6.94 key prefixes (`ctrl`, `est`, `drive`, `diag`).
+  The `SCALE` fallback table keeps the old key names, since it only serves pre-v0.6.83 firmware.
+
+---
+
 ## [0.4.0] - 2026-09-28
 
 ### Changed

@@ -18,7 +18,8 @@ So there's one app, and a small `profiles/` folder that tells it how to decode t
 ## ✨ Features
 
 - 🔍 **Auto-detection** — connects, sweeps the parameter table, matches key-prefix "fingerprints" against known robots, and picks the right profile. No manual robot selection.
-- 🗂️ **Zero-config pagination** — ~200+ parameters organized into navigable groups and sub-tabs, derived entirely from key structure.
+- 🗂️ **Zero-config pagination** — ~200+ parameters organized into navigable groups and sub-tabs, derived entirely from key structure, in the order the firmware lists them.
+- 💬 **Parameter descriptions** — hover a parameter for its one-line description, sent by the firmware (`<KD##>`, BallBot v0.6.94+), fetched in the background for the page you're on and cached per firmware version.
 - 📊 **Live dashboard** — streamable telemetry at up to 100 Hz. Profiles can declare titled panels and rolling plots (T4-IMU does); anything without a spec still renders generically from whatever fields it streams.
 - ✅ **Real send/confirm feedback** — you see *sending...* the instant you move a slider, and a clear ✓/✗ once the board actually replies. No more wondering if a change "took."
 - ⚠️ **Unsaved-changes banner** — config edits are live/RAM-only until you hit **Save to SD**; a persistent warning reminds you it isn't durable yet.
@@ -59,7 +60,7 @@ In the CLI:
 |---|---|
 | **RX-80B** | `hero.*`, `lift.*` |
 | **Orchestron** | `stormtrooper.*` |
-| **T4-IMU** | `balance.*`, `velocity.*`, `turn.*`, `kin.*`, `phys.*`, `cal.*`, `imu.*`, `move.*` |
+| **T4-IMU** | `ctrl.*`, `est.*`, `cal.*`, `drive.*`, `diag.*` (v0.6.94+); `balance.*`, `velocity.*`, `turn.*`, `kin.*`, `phys.*`, `imu.*`, `move.*` (older) |
 
 An unrecognized robot still works for config editing (`profiles/base.py`) — it just won't have a decoded telemetry dashboard until it gets its own profile.
 

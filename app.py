@@ -24,6 +24,7 @@ render-loop (main) thread.
 """
 from __future__ import annotations
 
+import json
 import queue
 import sys
 import threading
@@ -75,6 +76,14 @@ class AppState:
         self.plot_t0: float | None = None                       # firmware ms of first sample
         self.ble_devices: list[tuple[str, str]] = []   # last BLE scan result
         self.ble_ready = False                 # render loop should refill the BLE combo
+        # Per-key one-line descriptions from <KD##> (firmware that supports it), fetched in the
+        # background for the page on screen and cached on disk per robot + firmware version.
+        self.desc: dict[str, str] = {}
+        self.desc_supported: bool | None = None  # None = not tried yet on this connection
+        self.desc_pending: list[str] = []      # keys still to fetch, in page order
+        self.desc_fetching = False             # a fetch step is queued on the io worker
+        self.desc_new: set[str] = set()        # fetched since the render loop last looked
+        self.desc_cache_file: Path | None = None
 
 
 state = AppState()
@@ -181,8 +190,83 @@ def _force_disconnect(status: str) -> None:
         state.profile_name = ""
         state.mtp_active = None
         state.dirty.clear()        # drop queued edits; they can never land now
+        state.desc_pending.clear()  # a queued fetch step sees the empty list and stops
     _reset_plot_buffers()
     set_status(status)
+
+
+def _desc_cache_file(profile: str, fw: int) -> Path:
+    """~/.droid_config/desc_<profile>_<fw>.json - descriptions never change within a firmware
+    version, so each is fetched once per robot + version, ever."""
+    safe = "".join(c if c.isalnum() else "_" for c in profile) or "robot"
+    return Path.home() / ".droid_config" / f"desc_{safe}_{fw}.json"
+
+
+def _load_desc_cache(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_desc_cache() -> None:
+    with state.lock:
+        path, data = state.desc_cache_file, dict(state.desc)
+    if path is None or not data:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass        # a cache that can't be written just means fetching again next time
+
+
+def job_fetch_descriptions(keys: list[str]) -> None:
+    """Queue description fetches for these keys (the page on screen). One key per io job, and
+    each step re-queues itself, so a parameter edit queued meanwhile runs between two fetches
+    instead of waiting for the whole page. Connecting stays as fast as before: nothing is
+    fetched until a page is shown, and nothing twice per firmware version."""
+    with state.lock:
+        if state.desc_supported is False:
+            return
+        known = set(state.desc) | set(state.desc_pending)
+        state.desc_pending.extend(k for k in keys if k not in known)
+        if state.desc_fetching or not state.desc_pending:
+            return
+        state.desc_fetching = True
+    io_q.put(_fetch_description_step)
+
+
+def _fetch_description_step() -> None:
+    with state.lock:
+        key = state.desc_pending.pop(0) if state.desc_pending else None
+    b = bot
+    info = b.params.get(key) if (b is not None and key) else None
+    if info is None or not link_is_up():
+        with state.lock:
+            state.desc_fetching = False
+            state.desc_pending.clear()
+        return
+    try:
+        text = b.describe_text(info.id)
+    except ProtocolError:
+        text = None
+    with state.lock:
+        if text is None:
+            if state.desc_supported is None:      # first answer was an error: firmware without <KD>
+                state.desc_supported = False
+                state.desc_pending.clear()
+        else:
+            state.desc_supported = True
+            state.desc[key] = text
+            state.desc_new.add(key)
+        more = bool(state.desc_pending)
+        state.desc_fetching = more
+    if more:
+        io_q.put(_fetch_description_step)
+    else:
+        _save_desc_cache()
 
 
 def job_connect(transport) -> None:
@@ -221,6 +305,12 @@ def job_connect(transport) -> None:
             state.nav_built = False
             state.groups_ready = True
             state.mtp_active = mtp
+            state.desc_cache_file = _desc_cache_file(profiles.active.NAME, fw)
+            state.desc = _load_desc_cache(state.desc_cache_file)
+            state.desc_supported = True if state.desc else None
+            state.desc_pending.clear()
+            state.desc_fetching = False
+            state.desc_new = set()
         set_status(f"Connected - {profiles.active.NAME}, fw {fw // 10000}.{(fw // 100) % 100}.{fw % 100}, "
                    f"{len(params)} params")
     io_q.put(run)
@@ -402,6 +492,13 @@ _plot_axes: list[int] = []                     # indices of the plots actually b
 LABEL_W, SLIDER_W, INPUT_W, SCALED_W = 220, 260, 110, 60
 
 
+def _tip_text(info) -> str:
+    """Row tooltip: the firmware's one-line description (when it has sent one), then key / id /
+    range as before."""
+    d = state.desc.get(info.key)
+    return (f"{d}\n\n" if d else "") + f"{info.key}\nid {info.id}   range {info.vmin}..{info.vmax}"
+
+
 def _param_rows(params: list, parent: str, label_of=None) -> None:
     """The standard label / slider / input / scaled-value table."""
     with dpg.table(parent=parent, header_row=False, policy=dpg.mvTable_SizingFixedFit,
@@ -416,7 +513,7 @@ def _param_rows(params: list, parent: str, label_of=None) -> None:
                 label = label_of(info) if label_of else info.key
                 dpg.add_text(label)
                 with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text(f"{info.key}\nid {info.id}   range {info.vmin}..{info.vmax}")
+                    dpg.add_text(_tip_text(info), tag=f"tip_{info.key}", wrap=420)
                 dpg.add_slider_int(tag=f"sld_{info.key}", default_value=info.value,
                                    min_value=info.vmin, max_value=info.vmax, width=-1,
                                    callback=on_param_change, user_data=info.key)
@@ -436,7 +533,7 @@ def _build_subgrouped_page(params: list, parent: str) -> None:
         _param_rows(glob, parent)
         dpg.add_separator(parent=parent)
     with dpg.tab_bar(parent=parent):
-        for sub in sorted(per):
+        for sub in per:            # firmware order (0.5.0; was alphabetical)
             with dpg.tab(label=sub):
                 # Strip the "page.sub." prefix - the tab already says which one.
                 _param_rows(per[sub], dpg.last_item(),
@@ -477,6 +574,7 @@ def build_page() -> None:
             if len(hits) > 200:
                 dpg.add_text(f"... {len(hits) - 200} more, narrow the search",
                              parent="page_group", color=(200, 160, 100))
+            job_fetch_descriptions([p.key for p in hits[:200]])
         else:
             dpg.add_text("No matching keys.", parent="page_group")
         return
@@ -492,6 +590,7 @@ def build_page() -> None:
         _build_subgrouped_page(params, "page_group")
     else:
         _param_rows(params, "page_group")
+    job_fetch_descriptions([p.key for p in params])
 
 
 def build_telemetry_groups() -> None:
@@ -742,6 +841,13 @@ def main() -> int:
             build_page()
             with state.lock:
                 state.page_dirty = False
+        with state.lock:                       # descriptions fetched in the background
+            new_desc, state.desc_new = state.desc_new, set()
+        if new_desc:
+            by_key = {p.key: p for p in state.params}
+            for key in new_desc:
+                if key in by_key and dpg.does_item_exist(f"tip_{key}"):
+                    dpg.set_value(f"tip_{key}", _tip_text(by_key[key]))
         if fr is not None:
             update_dashboard(fr)
             with state.lock:

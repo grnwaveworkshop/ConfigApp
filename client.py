@@ -73,6 +73,16 @@ class RobotClient:
         return ParamInfo(id=key_id, key=key, vmin=vmin, vmax=vmax, value=val,
                          fw_scale=fw_scale)
 
+    def describe_text(self, key_id: int) -> str | None:
+        """<KD##> - the key's one-line description, for a tooltip (BallBot T4-IMU v0.6.94+).
+        None when the firmware doesn't support it: it answers an unknown sub-command with an
+        error frame, so the caller can stop asking after the first try."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}D{key_id}"))
+        if not tag.startswith(CATEGORY + "D"):
+            return None
+        text = ",".join(args).strip()   # the description may itself contain commas
+        return text or None
+
     def get(self, key_or_id: str | int) -> int:
         kid = self._to_id(key_or_id)
         tag, args = split_frame(self.proto.request(f"{CATEGORY}G{kid}"))

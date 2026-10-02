@@ -8,8 +8,10 @@ from __future__ import annotations
 NAME = "T4-IMU"
 
 # Balance-bot-specific concepts that don't appear in RX-80B/Orchestron's
-# ConfigParams.def.
-SIGNATURE_PREFIXES = {"balance", "velocity", "turn", "kin", "phys", "cal", "imu", "move"}
+# ConfigParams.def. Firmware v0.6.94 regrouped its keys (ctrl.*, est.*, cal.*, drive.*, diag.*);
+# the old prefixes stay for older firmware.
+SIGNATURE_PREFIXES = {"balance", "velocity", "turn", "kin", "phys", "cal", "imu", "move",
+                      "ctrl", "est", "drive", "diag"}
 
 # Fallback ONLY for firmware older than v0.6.83. Since v0.6.83 each key's scale is a column
 # in the firmware's ConfigParams.def and arrives in the <KN> descriptor, which wins over this
