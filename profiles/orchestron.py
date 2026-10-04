@@ -7,16 +7,18 @@ from __future__ import annotations
 
 NAME = "Orchestron"
 
-# "stormtrooper" (voice FX) doesn't appear in RX-80B or T4-IMU's ConfigParams.def.
-SIGNATURE_PREFIXES = {"stormtrooper"}
+# "stormtrooper" (voice FX, up to firmware 2.24) and "fx" / "react" (2.25.0 regroup)
+# don't appear in RX-80B or T4-IMU's ConfigParams.def.
+SIGNATURE_PREFIXES = {"stormtrooper", "fx", "react"}
 
+# Fallback only: Orchestron 2.25.0+ sends each key's scale in <KN>. These are the
+# pre-2.25 key names; don't add new keys here (add the scale in the firmware).
 SCALE: dict[str, int] = {
     "voice.fixedGain": 100,
     "voice.inputGain": 100,
     "stormtrooper.bassGain": 100,
     "stormtrooper.trebleGain": 100,
     "stormtrooper.resonance": 100,
-    "noise.overSubtraction": 100,
 }
 
 TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-10-04
+
+### Changed
+- **Orchestron 2.25.0 detection.** The firmware regrouped its keys into ConfigApp pages (`audio`,
+  `fx`, `servo`, `react`, `neo`, `rc`, `button`, `rec`, `pin`, `serial`), so the profile also
+  recognises the new `fx` and `react` prefixes. `stormtrooper` still detects older firmware.
+- Orchestron 2.25.0 sends scale in `<KN>` and descriptions over `<KD>`, so its pages get the scaled
+  column and tooltips with no profile table. The fallback `SCALE` table is frozen at the old key
+  names; the stale `noise.overSubtraction` entry is gone.
+
+---
+
 ## [0.5.0] - 2026-10-01
 
 ### Added
