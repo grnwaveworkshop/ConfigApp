@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.2] - 2026-10-04
+
+### Changed
+- **Orchestron channel telemetry is labelled `ch1`..`ch12`**, as the transmitter numbers them
+  (firmware 2.26.0 numbers every channel setting that way; RC PWM IO1 = ch1). It was `ch0`..`ch11`.
+
+---
+
 ## [0.5.1] - 2026-10-04
 
 ### Changed
