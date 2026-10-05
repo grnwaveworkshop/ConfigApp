@@ -136,6 +136,33 @@ class RobotClient:
             raise ProtocolError(f"mtp_exit failed: {tag},{args}")
         return bool(int(args[0]))
 
+    # -- actions (Orchestron 2.27.2+) ------------------------------------------ #
+    def actions(self) -> list[tuple[str, str, str]]:
+        """<KA> + <KA##> sweep - the firmware's action catalogue as (group, label, command).
+        Empty when the firmware has no <KA> (it answers with an error frame)."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}A"))
+        if tag != CATEGORY + "A" or not args:
+            return []
+        out: list[tuple[str, str, str]] = []
+        for i in range(int(args[0])):
+            tag, args = split_frame(self.proto.request(f"{CATEGORY}A{i}"))
+            if tag.startswith(_ERR) or len(args) < 3:
+                continue
+            out.append((args[0], args[1], args[2]))
+        return out
+
+    def run_action(self, command: str) -> tuple[bool, str]:
+        """<KA,command> - run one action, in the robot's buttons.ini vocabulary
+        ("rec:toggle", "seq:wave", "mode:control", "stop", "wavA:12" ...).
+        Returns (ok, message), e.g. (True, "REC 0:00 / 10:00")."""
+        command = command.strip()
+        if not command or any(c in command for c in "<>"):
+            raise ProtocolError("an action can't be empty or contain < >")
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}A,{command}", timeout=3.0))
+        if tag != CATEGORY + "A" or not args:
+            raise ProtocolError(f"action not supported by this firmware: {tag},{args}")
+        return args[0] == "1", ",".join(args[1:]).strip()
+
     # -- param map ---------------------------------------------------------- #
     def refresh_params(self) -> dict[str, ParamInfo]:
         """Sweep <KN0..N-1> and auto-detect the robot profile from the key

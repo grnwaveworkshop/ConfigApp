@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-10-05
+
+### Added
+- **Actions tab** (firmware with `<KA>`, Orchestron 2.27.2+):
+  - one button per entry in the robot's action list, grouped (Recorder, Robot, Audio, Sequences)
+  - a box that runs any action in the robot's `buttons.ini` vocabulary (`seq:wave`, `wavA:2001`,
+    `mode:control` ...)
+  - the result shows in the confirm line. `client.actions()` / `client.run_action()`; CLI
+    `actions` and `action <command>`.
+- **Record button** in the top bar when the robot lists `rec:toggle`. It reads **Stop
+  recording** during a take, with the take time (`REC 0:42 / 10:00`) or `writing NN%` beside it.
+  - The state comes from the new Orchestron `rec` telemetry group while the dashboard streams.
+    Otherwise the app polls `rec:status` once a second, so a take started from the transmitter,
+    or ended by its time limit, still shows.
+- **Orchestron `rec` telemetry group:** `recState`, `recFrames`, `recMs`, `recLimitMs`, `recPct`.
+
+### Changed
+- **Telemetry groups can require a firmware version** (profile `TELEMETRY_MIN_FW`). Orchestron
+  firmware before 2.27.2 echoed a requested-but-unimplemented group bit without its fields, which
+  shifted the rest of the frame. So the app no longer asks those boards for `rec`, and its
+  checkbox is greyed out.
+
+---
+
 ## [0.5.2] - 2026-10-04
 
 ### Changed

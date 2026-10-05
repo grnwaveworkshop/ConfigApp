@@ -84,6 +84,15 @@ class AppState:
         self.desc_fetching = False             # a fetch step is queued on the io worker
         self.desc_new: set[str] = set()        # fetched since the render loop last looked
         self.desc_cache_file: Path | None = None
+        # Actions (<KA>, Orchestron 2.27.2+): the firmware's catalogue as (group, label, command)
+        self.actions: list[tuple[str, str, str]] = []
+        self.actions_ready = False             # render loop should rebuild the Actions tab
+        # Recorder, from the rec telemetry group or an action reply: None = unknown,
+        # 0 idle, 1 recording, 2 writing the CSV
+        self.rec_state: int | None = None
+        self.rec_text = ""
+        self.last_telemetry = 0.0              # time.time() of the last <KT> frame
+        self.rec_poll_due = 0.0                # next rec:status poll (only while no telemetry)
 
 
 state = AppState()
@@ -137,9 +146,47 @@ def job_ble_scan() -> None:
     io_q.put(run)
 
 
+def _rec_from_telemetry(fr: TelemetryFrame) -> None:
+    """Recorder state from the rec group (firmware 2.27.2+). Caller holds state.lock."""
+    if "recState" not in fr.raw:
+        return
+    st = int(fr.get("recState"))
+    state.rec_state = st
+    if st == 1:
+        s, lim = int(fr.get("recMs")) // 1000, int(fr.get("recLimitMs")) // 1000
+        state.rec_text = f"REC {s // 60}:{s % 60:02d} / {lim // 60}:{lim % 60:02d}"
+    elif st == 2:
+        state.rec_text = f"writing {int(fr.get('recPct'))}%"
+    else:
+        state.rec_text = ""
+
+
+def _rec_from_reply(msg: str) -> None:
+    """Recorder state from a rec: action reply ("REC 0:00 / 10:00", "writing 3%", "idle")."""
+    with state.lock:
+        if msg.startswith("REC"):
+            state.rec_state, state.rec_text = 1, msg
+        elif msg.startswith("writing"):
+            state.rec_state, state.rec_text = 2, msg
+        elif msg.startswith("idle"):
+            state.rec_state, state.rec_text = 0, ""
+
+
+def implemented_mask() -> int:
+    """The profile's telemetry groups, minus those this firmware is too old to emit
+    (profile TELEMETRY_MIN_FW)."""
+    mask = profiles.active.TELEMETRY_MASK_IMPLEMENTED
+    for bit, min_fw in getattr(profiles.active, "TELEMETRY_MIN_FW", {}).items():
+        if state.fw < min_fw:
+            mask &= ~bit
+    return mask
+
+
 def on_telemetry(fr: TelemetryFrame) -> None:
     with state.lock:
         state.telemetry = fr
+        state.last_telemetry = time.time()
+        _rec_from_telemetry(fr)
         if not _plot_keys:
             return
         # Firmware `ms` is the honest time base (the UI thread may lag); fall back
@@ -189,6 +236,10 @@ def _force_disconnect(status: str) -> None:
         state.telemetry = None
         state.profile_name = ""
         state.mtp_active = None
+        state.actions = []
+        state.actions_ready = True
+        state.rec_state = None
+        state.rec_text = ""
         state.dirty.clear()        # drop queued edits; they can never land now
         state.desc_pending.clear()  # a queued fetch step sees the empty list and stops
     _reset_plot_buffers()
@@ -287,6 +338,10 @@ def job_connect(transport) -> None:
             b.set_telemetry_handler(on_telemetry)
             params = b.refresh_params()  # also auto-detects profiles.active
             mtp = b.mtp_status()
+            try:
+                acts = b.actions()       # [] on firmware without <KA>
+            except ProtocolError:
+                acts = []
         except Exception:
             # Never leave an opened-but-unusable transport behind: it holds the
             # COM port and blocks the next connect attempt.
@@ -305,6 +360,10 @@ def job_connect(transport) -> None:
             state.nav_built = False
             state.groups_ready = True
             state.mtp_active = mtp
+            state.actions = acts
+            state.actions_ready = True
+            state.rec_state = None
+            state.rec_text = ""
             state.desc_cache_file = _desc_cache_file(profiles.active.NAME, fw)
             state.desc = _load_desc_cache(state.desc_cache_file)
             state.desc_supported = True if state.desc else None
@@ -384,6 +443,52 @@ def job_mtp_toggle() -> None:
     io_q.put(run)
 
 
+def job_action(command: str) -> None:
+    """Run one action on the robot (<KA,command>) - same vocabulary as its buttons.ini."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            ok, msg = bot.run_action(command)
+        except ProtocolError as e:
+            set_confirm(f"✗ {command}: {e}")
+            return
+        set_confirm(("✓ " if ok else "✗ ") + f"{command}: {msg}")
+        if command.strip().lower().startswith("rec:"):
+            _rec_from_reply(msg)
+    io_q.put(run)
+
+
+def job_rec_poll() -> None:
+    """rec:status once a second while no telemetry is streaming, so the Record button
+    follows a take started from the transmitter or ended by its time limit."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            _ok, msg = bot.run_action("rec:status")
+        except ProtocolError:
+            return
+        _rec_from_reply(msg)
+    io_q.put(run)
+
+
+def job_refresh_actions() -> None:
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            acts = bot.actions()
+        except ProtocolError as e:
+            set_status(f"Action list failed: {e}")
+            return
+        with state.lock:
+            state.actions = acts
+            state.actions_ready = True
+        set_status(f"{len(acts)} actions")
+    io_q.put(run)
+
+
 # --------------------------------------------------------------------------- #
 # Callbacks (main thread)
 # --------------------------------------------------------------------------- #
@@ -459,8 +564,15 @@ def on_apply_hz() -> None:
     for name, bit, fields in profiles.active.TELEMETRY_GROUPS:
         if fields and dpg.does_item_exist(f"grp_{name}") and dpg.get_value(f"grp_{name}"):
             mask |= bit
-    job_stream(int(dpg.get_value("stream_hz")), mask or profiles.active.TELEMETRY_MASK_IMPLEMENTED)
-    build_dashboard_fields(mask or profiles.active.TELEMETRY_MASK_IMPLEMENTED)
+    mask &= implemented_mask()
+    job_stream(int(dpg.get_value("stream_hz")), mask or implemented_mask())
+    build_dashboard_fields(mask or implemented_mask())
+
+
+def on_run_action(sender=None, app_data=None) -> None:
+    text = (dpg.get_value("action_text") or "").strip()
+    if text:
+        job_action(text)
 
 
 def flush_dirty() -> None:
@@ -596,10 +708,35 @@ def build_page() -> None:
 def build_telemetry_groups() -> None:
     """Rebuild the Dashboard's group checkboxes for whatever profile is active."""
     dpg.delete_item("telemetry_groups", children_only=True)
-    for name, _bit, fields in profiles.active.TELEMETRY_GROUPS:
+    avail = implemented_mask()
+    for name, bit, fields in profiles.active.TELEMETRY_GROUPS:
+        on = bool(fields) and bool(avail & bit)
         dpg.add_checkbox(label=name, tag=f"grp_{name}", parent="telemetry_groups",
-                         default_value=bool(fields), enabled=bool(fields))
-    build_dashboard_fields(profiles.active.TELEMETRY_MASK_IMPLEMENTED)
+                         default_value=on, enabled=on)
+    build_dashboard_fields(avail)
+
+
+def build_actions() -> None:
+    """Rebuild the Actions tab from the firmware's catalogue: one row of buttons per group."""
+    dpg.delete_item("actions_group", children_only=True)
+    if not state.actions:
+        dpg.add_text("Not connected, or this firmware has no action list (Orchestron 2.27.2+).",
+                     parent="actions_group", color=(200, 160, 100))
+        return
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for group, label, command in state.actions:     # firmware order
+        groups.setdefault(group, []).append((label, command))
+    per_row = 4
+    for group, items in groups.items():
+        dpg.add_text(group, parent="actions_group", color=(150, 200, 255))
+        for i in range(0, len(items), per_row):
+            row = dpg.add_group(horizontal=True, parent="actions_group")
+            for label, command in items[i:i + per_row]:
+                dpg.add_button(label=label, parent=row, width=190, user_data=command,
+                               callback=lambda s, a, u: job_action(u))
+                with dpg.tooltip(dpg.last_item()):
+                    dpg.add_text(command)
+        dpg.add_spacer(height=6, parent="actions_group")
 
 
 def _reset_plot_buffers() -> None:
@@ -744,6 +881,10 @@ def build_layout() -> None:
             dpg.add_button(label="Connect", tag="btn_connect", callback=on_connect)
             dpg.add_button(label="Enter MTP Mode", tag="btn_mtp", callback=lambda: job_mtp_toggle(),
                           enabled=False)
+            # Shown when the firmware lists rec:toggle (Orchestron 2.27.2+)
+            dpg.add_button(label="Record", tag="btn_rec", width=120, show=False,
+                           callback=lambda: job_action("rec:toggle"))
+            dpg.add_text("", tag="rec_text", color=(235, 90, 90))
             dpg.add_spacer(width=40)
             dpg.add_text("", tag="confirm_text", color=(150, 220, 150))
         dpg.add_text("Disconnected", tag="status_text", color=(200, 200, 120))
@@ -785,6 +926,19 @@ def build_layout() -> None:
                     dpg.add_spacer(height=6)
                     dpg.add_group(tag="dash_plots")
 
+            with dpg.tab(label="Actions"):
+                dpg.add_text("Run things on the robot. Any action its buttons.ini understands works "
+                             "here too, e.g. seq:wave, wavA:2001, randomA:2, mode:control, rec:toggle.",
+                             wrap=900, color=(160, 160, 160))
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag="action_text", width=300, hint="an action, e.g. seq:wave",
+                                       on_enter=True, callback=on_run_action)
+                    dpg.add_button(label="Run", callback=on_run_action)
+                    dpg.add_button(label="Refresh list", callback=lambda: job_refresh_actions())
+                dpg.add_separator()
+                with dpg.child_window(border=False, height=-1):
+                    dpg.add_group(tag="actions_group")
+
 
 def main() -> int:
     global io_running
@@ -810,6 +964,11 @@ def main() -> int:
             confirm = state.confirm
             unsaved = state.unsaved
             mtp_active = state.mtp_active
+            need_actions = state.actions_ready
+            state.actions_ready = False
+            can_record = any(cmd == "rec:toggle" for _g, _l, cmd in state.actions)
+            rec_state = state.rec_state
+            rec_text = state.rec_text
             ble_devs = state.ble_devices if state.ble_ready else None
             state.ble_ready = False
         if ble_devs is not None:
@@ -822,6 +981,17 @@ def main() -> int:
         dpg.configure_item("btn_connect", label="Disconnect" if connected else "Connect")
         dpg.configure_item("btn_mtp", enabled=connected,
                            label="Exit MTP Mode" if mtp_active else "Enter MTP Mode")
+        dpg.configure_item("btn_rec", show=connected and can_record,
+                           enabled=rec_state != 2,      # writing the CSV: wait
+                           label="Stop recording" if rec_state == 1 else "Record")
+        dpg.set_value("rec_text", rec_text if connected else "")
+        if need_actions:
+            build_actions()
+        now = time.time()
+        if connected and can_record and now - state.last_telemetry > 2.0 \
+                and now >= state.rec_poll_due and io_q.empty():
+            state.rec_poll_due = now + 1.0
+            job_rec_poll()
         dpg.set_value("confirm_text", confirm)
         dpg.configure_item("confirm_text",
                            color=(220, 120, 120) if confirm.startswith("\u2717") else (150, 220, 150))

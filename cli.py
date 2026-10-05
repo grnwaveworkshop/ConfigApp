@@ -21,6 +21,8 @@ Commands:
     sweep                     time a full <KN##> descriptor sweep
     raw <KG44>                send a literal frame body
     mtp [on|off]              query, or enter/exit, MTP/mass-storage mode
+    actions                   <KA> the firmware's action list (Orchestron 2.27.2+)
+    action <command>          <KA,command> run one, e.g. action rec:toggle / seq:wave
     q                         quit
 """
 from __future__ import annotations
@@ -168,6 +170,15 @@ def main() -> int:
                     print("MTP OFF" if not bot.mtp_exit() else "MTP exit failed")
                 else:
                     print("MTP ON" if bot.mtp_status() else "MTP OFF")
+            elif cmd == "actions":
+                acts = bot.actions()
+                if not acts:
+                    print("  (no action list - firmware without <KA>)")
+                for group, label, command in acts:
+                    print(f"  {group:10s} {label:26s} {command}")
+            elif cmd == "action":
+                ok, msg = bot.run_action(line.split(None, 1)[1])
+                print(("ok: " if ok else "FAILED: ") + msg)
             else:
                 print("?")
         except (ProtocolError, IndexError, ValueError) as e:

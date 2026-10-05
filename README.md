@@ -21,6 +21,7 @@ So there's one app, and a small `profiles/` folder that tells it how to decode t
 - 🗂️ **Zero-config pagination** — ~200+ parameters organized into navigable groups and sub-tabs, derived entirely from key structure, in the order the firmware lists them.
 - 💬 **Parameter descriptions** — hover a parameter for its one-line description, sent by the firmware (`<KD##>`, BallBot v0.6.94+), fetched in the background for the page you're on and cached per firmware version.
 - 📊 **Live dashboard** — streamable telemetry at up to 100 Hz. Profiles can declare titled panels and rolling plots (T4-IMU does); anything without a spec still renders generically from whatever fields it streams.
+- ▶️ **Actions** — robots that list actions (`<KA>`, Orchestron 2.27.2+) get an Actions tab of buttons (recorder, modes, home, stop, sequences) and a box to run any action in the robot's `buttons.ini` vocabulary. Orchestron also gets a **Record** button in the top bar that shows the take time.
 - ✅ **Real send/confirm feedback** — you see *sending...* the instant you move a slider, and a clear ✓/✗ once the board actually replies. No more wondering if a change "took."
 - ⚠️ **Unsaved-changes banner** — config edits are live/RAM-only until you hit **Save to SD**; a persistent warning reminds you it isn't durable yet.
 - 📶 **USB or BLE** — wired serial, or wireless to an HM-10 class module (BallBot's `bt.*` link). Same protocol, same app; pick BLE in the connect bar or pass `--ble` to the CLI.
@@ -45,7 +46,7 @@ py cli.py --ble           # connect by name
 py cli.py --ble --address 00:35:FF:20:90:DD
 ```
 
-In the GUI: pick a port and hit **Connect** — or tick **BLE**, hit **Scan**, pick the module, then **Connect**. Once connected, the left nav shows every parameter group; the **Dashboard** tab streams live telemetry.
+In the GUI: pick a port and hit **Connect** — or tick **BLE**, hit **Scan**, pick the module, then **Connect**. Once connected, the left nav shows every parameter group; the **Dashboard** tab streams live telemetry, and the **Actions** tab runs things on the robot.
 
 In the CLI:
 ```

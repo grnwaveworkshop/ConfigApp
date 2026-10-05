@@ -28,9 +28,16 @@ TELEMETRY_GROUPS: list[tuple[str, int, list[str]]] = [
     ("status",   0x08, ["sbusOk", "sdOk", "masterVol"]),
     ("pin",      0x10, [f"io{i}" for i in range(1, 9)]),  # RC PWM pulse width (us) per IO
     ("seq",      0x20, []),                              # RESERVED
-    ("rec",      0x40, []),                              # RESERVED
+    # SBUS recorder (firmware 2.27.2+): recState 0 idle / 1 recording / 2 writing the CSV,
+    # frames, take time and auto-stop time (ms, 0 unless recording), CSV write progress %
+    ("rec",      0x40, ["recState", "recFrames", "recMs", "recLimitMs", "recPct"]),
     ("diag",     0x80, ["freeRam"]),
 ]
-TELEMETRY_MASK_IMPLEMENTED = 0x01 | 0x04 | 0x08 | 0x10 | 0x80
+TELEMETRY_MASK_IMPLEMENTED = 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80
+
+# Groups older firmware doesn't emit: group bit -> first firmware (compact int) that does.
+# Firmware before 2.27.2 echoed a requested-but-unimplemented bit without sending its
+# fields, which would shift every later field, so the app doesn't ask it for these.
+TELEMETRY_MIN_FW: dict[int, int] = {0x40: 22702}
 
 MODE_NAMES: dict[int, str] = {0: "IDLE", 1: "MANUAL", 2: "CONTROL", 3: "AUTO"}
