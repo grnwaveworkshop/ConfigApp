@@ -1,4 +1,4 @@
-# 🤖 Robot Config
+# 🤖 Droid Config
 
 One config + telemetry app for an entire robot family — **RX-80B**, **Orchestron**, and **T4-IMU** — instead of three near-identical copies of the same tool.
 
