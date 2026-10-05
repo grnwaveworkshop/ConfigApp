@@ -21,6 +21,10 @@ that actually differs per robot is:
         }
     Panels and plot series whose key is not in the active telemetry mask are
     dropped automatically, so the spec never has to track the group checkboxes
+  - an OPTIONAL default for the Dashboard's Controls panel (DASHBOARD_CONTROLS):
+    action commands (<KA>, e.g. "rec:toggle", "mode:auto") shown as buttons. The
+    user pins/unpins from there; app.py saves that per robot, so this is only the
+    starting set. Missing = empty (base.py)
 
 `detect()` picks a profile after a param sweep by matching each profile's
 SIGNATURE_PREFIXES against the key prefixes actually present - no firmware

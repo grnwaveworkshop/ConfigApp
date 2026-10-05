@@ -91,6 +91,10 @@ class AppState:
         # 0 idle, 1 recording, 2 writing the CSV
         self.rec_state: int | None = None
         self.rec_text = ""
+        # Dashboard Controls panel: action commands pinned as buttons (app 0.7.0)
+        self.controls: list[str] = []
+        self.controls_ready = False            # render loop should rebuild the Controls panel
+        self.controls_file: Path | None = None
         self.last_telemetry = 0.0              # time.time() of the last <KT> frame
         self.rec_poll_due = 0.0                # next rec:status poll (only while no telemetry)
 
@@ -238,12 +242,79 @@ def _force_disconnect(status: str) -> None:
         state.mtp_active = None
         state.actions = []
         state.actions_ready = True
+        state.controls_ready = True    # the panel hides while disconnected
         state.rec_state = None
         state.rec_text = ""
         state.dirty.clear()        # drop queued edits; they can never land now
         state.desc_pending.clear()  # a queued fetch step sees the empty list and stops
     _reset_plot_buffers()
     set_status(status)
+
+
+def _controls_file(profile: str) -> Path:
+    """~/.droid_config/controls_<profile>.json - the Dashboard's pinned actions for this robot."""
+    safe = "".join(c if c.isalnum() else "_" for c in profile) or "robot"
+    return Path.home() / ".droid_config" / f"controls_{safe}.json"
+
+
+def _load_controls(path: Path) -> list[str]:
+    """The pinned actions, or the profile's DASHBOARD_CONTROLS if never customised."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("controls"), list):
+            return [str(c) for c in data["controls"]]
+    except (OSError, ValueError):
+        pass
+    return list(getattr(profiles.active, "DASHBOARD_CONTROLS", []))
+
+
+def _save_controls() -> None:
+    with state.lock:
+        path, controls = state.controls_file, list(state.controls)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"controls": controls}, indent=1), encoding="utf-8")
+    except OSError:
+        set_status(f"Couldn't save the Dashboard controls to {path}")
+
+
+def pin_control(command: str) -> None:
+    command = command.strip()
+    with state.lock:
+        if not command or command in state.controls:
+            return
+        state.controls.append(command)
+        state.controls_ready = True
+        state.actions_ready = True             # Actions tab menus say Pin/Unpin
+    _save_controls()
+    set_status(f"Pinned {command} to the Dashboard")
+
+
+def unpin_control(command: str) -> None:
+    with state.lock:
+        if command not in state.controls:
+            return
+        state.controls.remove(command)
+        state.controls_ready = True
+        state.actions_ready = True
+    _save_controls()
+    set_status(f"Unpinned {command} from the Dashboard")
+
+
+def reset_controls() -> None:
+    with state.lock:
+        state.controls = list(getattr(profiles.active, "DASHBOARD_CONTROLS", []))
+        state.controls_ready = True
+        state.actions_ready = True
+        path = state.controls_file
+    if path is not None:
+        try:
+            path.unlink()                      # no file = the profile's defaults
+        except OSError:
+            pass
+    set_status("Dashboard controls reset to the defaults")
 
 
 def _desc_cache_file(profile: str, fw: int) -> Path:
@@ -364,6 +435,9 @@ def job_connect(transport) -> None:
             state.actions_ready = True
             state.rec_state = None
             state.rec_text = ""
+            state.controls_file = _controls_file(profiles.active.NAME)
+            state.controls = _load_controls(state.controls_file)
+            state.controls_ready = True
             state.desc_cache_file = _desc_cache_file(profiles.active.NAME, fw)
             state.desc = _load_desc_cache(state.desc_cache_file)
             state.desc_supported = True if state.desc else None
@@ -727,16 +801,65 @@ def build_actions() -> None:
     for group, label, command in state.actions:     # firmware order
         groups.setdefault(group, []).append((label, command))
     per_row = 4
+    pinned = set(state.controls)
     for group, items in groups.items():
         dpg.add_text(group, parent="actions_group", color=(150, 200, 255))
         for i in range(0, len(items), per_row):
             row = dpg.add_group(horizontal=True, parent="actions_group")
             for label, command in items[i:i + per_row]:
-                dpg.add_button(label=label, parent=row, width=190, user_data=command,
-                               callback=lambda s, a, u: job_action(u))
-                with dpg.tooltip(dpg.last_item()):
-                    dpg.add_text(command)
+                btn = dpg.add_button(label=label, parent=row, width=190, user_data=command,
+                                     callback=lambda s, a, u: job_action(u))
+                with dpg.tooltip(btn):
+                    dpg.add_text(f"{command}\n\nRight-click to pin it to the Dashboard"
+                                 + (" (pinned)" if command in pinned else ""))
+                _pin_menu(btn, command, command in pinned)
         dpg.add_spacer(height=6, parent="actions_group")
+
+
+def _pin_menu(item: int, command: str, pinned: bool) -> None:
+    """Right-click menu on a button: pin it to the Dashboard, or unpin it."""
+    with dpg.popup(item, mousebutton=dpg.mvMouseButton_Right):
+        if pinned:
+            dpg.add_menu_item(label="Unpin from Dashboard", user_data=command,
+                              callback=lambda s, a, u: unpin_control(u))
+        else:
+            dpg.add_menu_item(label="Pin to Dashboard", user_data=command,
+                              callback=lambda s, a, u: pin_control(u))
+
+
+def _control_label(command: str) -> str:
+    """A pinned command's button label: the firmware's label for it, else the command."""
+    for _group, label, cmd in state.actions:
+        if cmd == command:
+            return label
+    return command
+
+
+def build_controls() -> None:
+    """The Dashboard's Controls panel: one button per pinned action. Hidden while
+    disconnected or when the firmware has no actions (<KA>)."""
+    dpg.delete_item("controls_group", children_only=True)
+    if not (state.connected and state.actions):
+        return
+    with dpg.group(horizontal=True, parent="controls_group"):
+        dpg.add_text("Controls", color=(150, 200, 255))
+        dpg.add_text("  right-click a button to unpin it; pin more from the Actions tab",
+                     color=(130, 130, 130))
+        dpg.add_button(label="Reset", small=True, callback=lambda: reset_controls())
+    if not state.controls:
+        dpg.add_text("Nothing pinned.", parent="controls_group", color=(200, 160, 100))
+    per_row = 6
+    for i in range(0, len(state.controls), per_row):
+        row = dpg.add_group(horizontal=True, parent="controls_group")
+        for command in state.controls[i:i + per_row]:
+            # rec:toggle keeps a fixed tag so the render loop can show Record / Stop recording
+            tag = "ctl_rec" if command == "rec:toggle" else 0
+            btn = dpg.add_button(label=_control_label(command), parent=row, width=150, tag=tag,
+                                 user_data=command, callback=lambda s, a, u: job_action(u))
+            with dpg.tooltip(btn):
+                dpg.add_text(command)
+            _pin_menu(btn, command, True)
+    dpg.add_separator(parent="controls_group")
 
 
 def _reset_plot_buffers() -> None:
@@ -868,6 +991,13 @@ def update_plots() -> None:
 # Layout
 # --------------------------------------------------------------------------- #
 def build_layout() -> None:
+    # Red Record buttons while a take runs (bound/unbound in the render loop)
+    with dpg.theme(tag="theme_recording"):
+        with dpg.theme_component(dpg.mvButton):
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (150, 35, 35))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (185, 50, 50))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (210, 60, 60))
+
     with dpg.window(tag="root"):
         with dpg.group(horizontal=True):
             dpg.add_checkbox(label="BLE", tag="chk_ble", callback=on_toggle_ble)
@@ -910,6 +1040,7 @@ def build_layout() -> None:
                         dpg.add_group(tag="page_group")
 
             with dpg.tab(label="Dashboard"):
+                dpg.add_group(tag="controls_group")    # pinned action buttons (build_controls)
                 with dpg.group(horizontal=True):
                     dpg.add_text("Rate Hz:")
                     dpg.add_input_int(tag="stream_hz", default_value=DEFAULT_STREAM_HZ,
@@ -934,6 +1065,10 @@ def build_layout() -> None:
                     dpg.add_input_text(tag="action_text", width=300, hint="an action, e.g. seq:wave",
                                        on_enter=True, callback=on_run_action)
                     dpg.add_button(label="Run", callback=on_run_action)
+                    dpg.add_button(label="Pin", callback=lambda: pin_control(
+                        (dpg.get_value("action_text") or "").strip()))
+                    with dpg.tooltip(dpg.last_item()):
+                        dpg.add_text("Pin the typed action to the Dashboard as a button")
                     dpg.add_button(label="Refresh list", callback=lambda: job_refresh_actions())
                 dpg.add_separator()
                 with dpg.child_window(border=False, height=-1):
@@ -966,6 +1101,8 @@ def main() -> int:
             mtp_active = state.mtp_active
             need_actions = state.actions_ready
             state.actions_ready = False
+            need_controls = state.controls_ready
+            state.controls_ready = False
             can_record = any(cmd == "rec:toggle" for _g, _l, cmd in state.actions)
             rec_state = state.rec_state
             rec_text = state.rec_text
@@ -987,6 +1124,14 @@ def main() -> int:
         dpg.set_value("rec_text", rec_text if connected else "")
         if need_actions:
             build_actions()
+        if need_controls:
+            build_controls()
+        rec_theme = "theme_recording" if (connected and rec_state == 1) else 0
+        dpg.bind_item_theme("btn_rec", rec_theme)
+        if dpg.does_item_exist("ctl_rec"):
+            dpg.configure_item("ctl_rec", enabled=rec_state != 2,
+                               label="Stop recording" if rec_state == 1 else "Record")
+            dpg.bind_item_theme("ctl_rec", rec_theme)
         now = time.time()
         if connected and can_record and now - state.last_telemetry > 2.0 \
                 and now >= state.rec_poll_due and io_q.empty():

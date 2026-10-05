@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-10-05
+
+### Added
+- **Controls panel on the Dashboard:** action buttons above the telemetry.
+  - **Starting set:** the profile's `DASHBOARD_CONTROLS`. Orchestron starts with Record, Stop
+    everything, Home and the four modes.
+  - **Pin:** right-click any button in the Actions tab, or type an action and press **Pin**.
+  - **Unpin:** right-click a Dashboard button. **Reset** goes back to the defaults.
+  - **Saved** per robot in `~/.droid_config/controls_<robot>.json`.
+  - The panel hides while disconnected, and for firmware without `<KA>`.
+- **The Record buttons turn red** while a take is running, in the top bar and on the Dashboard.
+
+---
+
 ## [0.6.0] - 2026-10-05
 
 ### Added

@@ -41,3 +41,9 @@ TELEMETRY_MASK_IMPLEMENTED = 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80
 TELEMETRY_MIN_FW: dict[int, int] = {0x40: 22702}
 
 MODE_NAMES: dict[int, str] = {0: "IDLE", 1: "MANUAL", 2: "CONTROL", 3: "AUTO"}
+
+# Dashboard Controls panel (app 0.7.0): action commands shown as buttons when the firmware
+# lists actions (<KA>). Only the default - pins/unpins are saved per robot on the PC.
+DASHBOARD_CONTROLS: list[str] = [
+    "rec:toggle", "stop", "home", "mode:idle", "mode:manual", "mode:control", "mode:auto",
+]

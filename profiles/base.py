@@ -17,3 +17,6 @@ TELEMETRY_MASK_IMPLEMENTED = 0
 # OPMODE_IDLE/MANUAL/CONTROL/AUTO - the one convention shared by every robot
 # in this family so far.
 MODE_NAMES: dict[int, str] = {0: "IDLE", 1: "MANUAL", 2: "CONTROL", 3: "AUTO"}
+
+# Default Dashboard Controls (action commands, needs firmware with <KA>); see orchestron.py
+DASHBOARD_CONTROLS: list[str] = []
