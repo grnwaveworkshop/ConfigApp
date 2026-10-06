@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-10-06
+
+### Added (Orchestron 2.32.0)
+- **Activities tab** in the Events tab: the robot's `[activity.NAME]` sections in words, with
+  Add, Edit, Delete and Test now. The editor covers each kind:
+  - **an action every so often:** any action, every 20-120 s ...
+  - **a playlist:** player, bank, shuffle, the gap between tracks
+  - **a pick of sequences:** up to 8, with weights and a no-repeat time
+  - **idle motion in AUTO:** servos, rest, swing, duty, intensity, period, pause, slew, how many
+    move at once. `sN.*` lines for one servo are kept.
+  - **when it runs:** modes, sound mode (manual / random / music) and held modifiers
+  - **start at once**, and a seed
+  - a preview of the section it writes
+- **Move rules up / down** (^ / v on each row). When two rules fire together, the upper one
+  runs first.
+- **The 2.32 actions in the rule editor:**
+  - Change a setting (`set:KEY=VALUE`)
+  - Next WAV in a bank
+  - Random WAV from a bank *or* a number range (`randomA:2001-2013`)
+  - Sound mode music
+
+  Text fields say what they expect. Rules list them in words ("Set audio.mix.master to 50",
+  "Random WAV numbered 2001-2013 (A)").
+- **`eventsini.py`:** `EventsDoc.activities()` / `set_activity()` / `delete_activity()`,
+  `move_entry()`, `Activity` (kind, describe, when parts), `parse_pick()` / `format_pick()`.
+  Sequences named by activities count as used.
+- **Tests:**
+  - activities, moving rules, the new actions
+  - comments kept on edit
+  - every `events.ini` the Orchestron repository ships (`docs/examples`, `SDCard*`) reads cleanly
+    and round-trips byte for byte
+
+### Fixed
+- **Editing a preset (and now an activity) dropped the comments at the ends of its lines.** A
+  setting that is written again keeps its comment.
+
+---
+
 ## [0.8.0] - 2026-10-05
 
 ### Added

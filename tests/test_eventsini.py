@@ -9,8 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest  # noqa: E402
 
 from eventsini import (NEW_FILE, Condition, EventsDoc, EventsError, Rule, Trigger,  # noqa: E402
-                       describe_action, join_action, learn_channel, split_action,
-                       suggest_condition)
+                       describe_action, format_pick, join_action, learn_channel, parse_pick,
+                       split_action, suggest_condition)
 
 # The firmware's example (Orchestron docs/examples/events.ini), shortened
 EXAMPLE = """; events.ini - example
@@ -193,6 +193,111 @@ def test_learn_helpers():
     assert suggest_condition(10, 1787) == Condition(10, "near", 1790)
     assert Condition(10, "above", 1800).holds(1850) and not Condition(10, "above", 1800).holds(1700)
     assert Condition(7, "near", 1200, 0).holds(1240, deadband=50)
+
+
+ACTIVITIES = """[events]
+pad.1 = seq:wave
+pad.2 = seq:look
+
+[activity.chatter]
+play  = randomA:2001-2013
+every = 20-120s
+when  = audio.random
+
+[activity.fidget]
+play     = pick(nod 3, look 2, shrug)   ; weighted
+every    = 10-40s
+cooldown = 60s
+when     = mode.auto|manual+shift
+
+[activity.alive]
+servos = s1, s2
+s2.swing = 30
+when = mode.auto
+"""
+
+
+def test_new_actions():
+    assert split_action("set:fx.pitch.amount=120") == ("set", "fx.pitch.amount=120")
+    assert describe_action("set:fx.pitch.amount=120") == "Set fx.pitch.amount to 120"
+    assert describe_action("randomA:2001-2013") == "Random WAV numbered 2001-2013 (A)"
+    assert describe_action("randomB:3") == "Random WAV from bank 3 (B)"
+    assert describe_action("nextA:3") == "Next WAV in bank 3 (A)"
+    assert split_action("next:3") == ("nextA", "3")
+    assert describe_action("audio:music") == "Music on"
+    assert Rule.parse("ch4 high", "set:audio.mix.master=50").is_state_rule()
+
+
+def test_activities():
+    doc = EventsDoc(ACTIVITIES)
+    acts = doc.activities()
+    assert list(acts) == ["chatter", "fidget", "alive"]
+    assert [a.kind for a in acts.values()] == ["action", "pick", "alive"]
+    assert parse_pick(acts["fidget"].get("play")) == [("nod", 3), ("look", 2), ("shrug", 1)]
+    assert acts["fidget"].when_parts() == (["shift"], ["auto", "manual"], [])
+    assert acts["chatter"].when_parts() == ([], [], ["random"])
+    assert acts["chatter"].describe() == ("Random WAV numbered 2001-2013 (A), every 20-120s - "
+                                          "when sound mode is random")
+    assert acts["alive"].describe() == "Idle motion for s1, s2 - in auto"
+    assert doc.sequence_names() == ["wave", "look", "nod", "shrug"]
+    _raises(lambda: parse_pick("pick(nod 300)"))
+    assert format_pick([("nod", 3), ("look", 1)]) == "pick(nod 3, look 1)"
+
+    # edit, add, delete: the other lines are untouched
+    doc.set_activity("chatter", [("play", "playlistB:3"), ("shuffle", "1"), ("when", "audio.music")])
+    assert doc.activities()["chatter"].kind == "playlist"
+    assert "Play bank 3 (B), shuffled" in doc.activities()["chatter"].describe()
+    doc.set_activity("music", [("play", "nextA:3"), ("every", "5s")])
+    assert list(doc.activities()) == ["chatter", "fidget", "alive", "music"]
+    doc.delete_activity("fidget")
+    assert list(doc.activities()) == ["chatter", "alive", "music"]
+    again = EventsDoc(doc.text())
+    assert {n: a.entries for n, a in again.activities().items()} == {n: a.entries for n, a in doc.activities().items()}
+    assert [l.key for _n, l in again.rules()] == ["pad.1", "pad.2"]
+
+
+def test_edits_keep_end_of_line_comments():
+    doc = EventsDoc("[activity.alive]\nservos = s1, s5\ns5.duty = 40   ; S5 moves less often\n"
+                    "[preset.deep]\nfx.pitch.amount = 85  ; lower\n")
+    doc.set_activity("alive", [("servos", "s1, s5"), ("s5.duty", "30")])
+    assert "s5.duty   = 30" in doc.text() and "; S5 moves less often" in doc.text()
+    doc.set_preset("deep", [("fx.pitch.amount", "80")])
+    assert "fx.pitch.amount = 80" in doc.text() and "; lower" in doc.text()
+    assert doc.activities()["alive"].get("s5.duty") == "30"
+    assert doc.presets() == {"deep": [("fx.pitch.amount", "80")]}
+
+
+def test_shipped_files():
+    """Every events.ini Orchestron ships (docs/examples, the SD card folders) reads cleanly
+    and round-trips byte for byte."""
+    orch = Path(__file__).resolve().parents[3] / "Teensy4VocalizerV3" / "Software" / "Orchestron"
+    files = [orch / "docs" / "examples" / "events.ini"] + sorted(orch.glob("SDCard*/events.ini"))
+    files = [f for f in files if f.exists()]
+    if not files:
+        return  # not next to the Orchestron repo
+    for f in files:
+        text = f.read_bytes().decode("utf-8")
+        doc = EventsDoc(text)
+        assert doc.text() == text.replace("\r\n", "\n").replace("\n", "\r\n"), f
+        bad = [l.raw for _n, l in doc.rules() if l.rule is None]
+        assert not bad, (f, bad)
+        for name, act in doc.activities().items():
+            assert act.kind, (f, name)
+
+
+def test_move_rules():
+    doc = EventsDoc(EXAMPLE)
+    keys = lambda: [l.key for _n, l in doc.rules()]
+    before = keys()
+    n = next(n for n, l in doc.rules() if l.key == "ch13 1500")
+    n2 = doc.move_entry(n, -1)
+    assert keys()[0:2] == ["ch13 1500", "ch13 low"] and doc.lines[n2 - 1].key == "ch13 1500"
+    assert doc.lines[n2 - 2].raw.startswith("; Motion mode")      # the comment stayed put
+    assert doc.move_entry(n2, -1) == n2                           # already first in [events]
+    doc.move_entry(n2, +1)
+    assert keys() == before
+    last = doc.rules()[-1][0]
+    assert doc.move_entry(last, +1) == last                       # already last
 
 
 def load_tests(loader, tests, pattern):

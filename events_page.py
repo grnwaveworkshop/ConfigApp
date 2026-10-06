@@ -1,4 +1,5 @@
-"""Events tab: edit the robot's events.ini without touching the text (Orchestron 2.31.0+).
+"""Events tab: edit the robot's events.ini without touching the text (Orchestron 2.31.0+;
+activities and the 2.32 actions with firmware 2.32.0+).
 
 What every transmitter control does is a rule in events.ini (see eventsini.py). This tab
 reads the file from the robot's SD card, shows each rule in plain words, edits them with
@@ -404,7 +405,7 @@ def _preview(*_args) -> None:
         kind = ev.ACTION_ARG.get(word) if word else None
         choices = _arg_choices(kind)
         dpg.configure_item(f"re_argc_{i}", show=bool(kind) and bool(choices), items=choices)
-        dpg.configure_item(f"re_argt_{i}", show=bool(kind) and not choices)
+        dpg.configure_item(f"re_argt_{i}", show=bool(kind) and not choices, hint=ev.ARG_HINTS.get(kind or "", ""))
         if choices and dpg.get_value(f"re_argc_{i}") not in choices:
             dpg.set_value(f"re_argc_{i}", choices[0])
     try:
@@ -696,6 +697,343 @@ def _update_live(inputs) -> None:
                       (f"   pad: button {pad}" if pad else "   pad: -") if us else "Not connected")
 
 
+
+# --------------------------------------------------------------------------- #
+# Activities ([activity.NAME], Orchestron 2.32+)
+# --------------------------------------------------------------------------- #
+_ACT_KIND_KEYS = list(ev.ACTIVITY_KINDS)
+_ACT_KIND_LABELS = list(ev.ACTIVITY_KINDS.values())
+_ACT_PICKS = 8
+_edit_activity: str | None = None
+
+
+def _act_kind() -> str:
+    return _ACT_KIND_KEYS[_ACT_KIND_LABELS.index(dpg.get_value("ae_kind"))]
+
+
+def _act_action_text() -> str:
+    label = dpg.get_value("ae_act")
+    word = next((w for w, l, _a in ev.ACTIONS if l == label), "seq")
+    kind = ev.ACTION_ARG[word]
+    arg = ""
+    if kind:
+        arg = (dpg.get_value("ae_argc") if dpg.is_item_shown("ae_argc") else dpg.get_value("ae_argt")) or ""
+        if kind == "wav":
+            arg = re.match(r"\s*(\d*)", arg).group(1)
+    return ev.join_action(word, arg)
+
+
+def _act_entries() -> list[tuple[str, str]]:
+    """The section's lines from the editor, keeping lines it doesn't edit (sN.*, unknown keys)."""
+    kind = _act_kind()
+    entries: list[tuple[str, str]] = []
+    if kind == "action":
+        entries.append(("play", _act_action_text()))
+    elif kind == "playlist":
+        entries.append(("play", f"playlist{dpg.get_value('ae_player')}:{dpg.get_value('ae_bank')}"))
+        if dpg.get_value("ae_shuffle"):
+            entries.append(("shuffle", "1"))
+    elif kind == "pick":
+        items = []
+        for i in range(_ACT_PICKS):
+            name = dpg.get_value(f"ae_pick_{i}")
+            if name and name != "(none)":
+                items.append((name, int(dpg.get_value(f"ae_w_{i}"))))
+        entries.append(("play", ev.format_pick(items)))
+    else:
+        servos = [f"s{i}" for i in range(1, 9) if dpg.get_value(f"ae_s{i}")]
+        entries.append(("servos", ", ".join(servos)))
+        for p in ("rest", "swing", "duty", "slew"):
+            entries.append((p, str(int(dpg.get_value(f"ae_{p}")))))
+        for p in ("period", "dwell"):
+            if (dpg.get_value(f"ae_{p}") or "").strip():
+                entries.append((p, dpg.get_value(f"ae_{p}").strip()))
+        entries.append(("minActive", str(int(dpg.get_value("ae_minActive")))))
+        entries.append(("intensity", str(int(dpg.get_value("ae_intensity")))))
+    every = (dpg.get_value("ae_every") or "").strip()
+    if every:
+        entries.append(("every", every))
+    cooldown = (dpg.get_value("ae_cooldown") or "").strip()
+    if kind == "pick" and cooldown:
+        entries.append(("cooldown", cooldown))
+    if kind in ("action", "pick") and dpg.get_value("ae_startnow"):
+        entries.append(("start", "now"))
+    if int(dpg.get_value("ae_seed")):
+        entries.append(("seed", str(int(dpg.get_value("ae_seed")))))
+    # keep what the editor doesn't show
+    edited = {k for k, _v in entries} | {"play", "servos", "shuffle", "every", "cooldown", "start", "seed",
+                                        "when", "rest", "swing", "duty", "slew", "period", "dwell",
+                                        "minactive", "intensity"}
+    if _edit_activity:
+        with S.lock:
+            old = S.doc.activities().get(_edit_activity.lower())
+        for k, v in (old.entries if old else []):
+            if k.lower() not in {e.lower() for e in edited}:
+                entries.append((k, v))
+    when = [dpg.get_item_label(f"ae_mod_{i}") for i in range(MAX_MODIFIERS)
+            if dpg.is_item_shown(f"ae_mod_{i}") and dpg.get_value(f"ae_mod_{i}")]
+    modes = [m for m in ev.MODES if dpg.get_value(f"ae_mode_{m}")]
+    if modes:
+        when.append("mode." + "|".join(modes))
+    audio = [a for a in ev.AUDIO_STATES if dpg.get_value(f"ae_audio_{a}")]
+    if audio:
+        when.append("audio." + "|".join(audio))
+    if when:
+        entries.append(("when", "+".join(when)))
+    return entries
+
+
+def _act_preview(*_args) -> None:
+    if not dpg.does_item_exist("act_editor") or not dpg.is_item_shown("act_editor"):
+        return
+    kind = _act_kind()
+    for k in _ACT_KIND_KEYS:
+        dpg.configure_item(f"ae_grp_{k}", show=k == kind)
+    dpg.configure_item("ae_grp_cooldown", show=kind == "pick")
+    dpg.configure_item("ae_startnow", show=kind in ("action", "pick"))
+    dpg.set_value("ae_every_label", "gap between tracks" if kind == "playlist" else "every")
+    label = dpg.get_value("ae_act")
+    word = next((w for w, l, _a in ev.ACTIONS if l == label), None)
+    akind = ev.ACTION_ARG.get(word) if word else None
+    choices = _arg_choices(akind)
+    dpg.configure_item("ae_argc", show=bool(akind) and bool(choices), items=choices)
+    dpg.configure_item("ae_argt", show=bool(akind) and not choices, hint=ev.ARG_HINTS.get(akind or "", ""))
+    if choices and dpg.get_value("ae_argc") not in choices:
+        dpg.set_value("ae_argc", choices[0])
+    seqs = ["(none)"] + _arg_choices("seq")
+    for i in range(_ACT_PICKS):
+        dpg.configure_item(f"ae_pick_{i}", items=seqs)
+    name = (dpg.get_value("ae_name") or "").strip() or "NAME"
+    act = ev.Activity(name, _act_entries())
+    dpg.set_value("ae_words", act.describe())
+    dpg.set_value("ae_preview", f"[activity.{name}]\n" + "\n".join(f"{k:<10}= {v}" for k, v in act.entries))
+
+
+def _open_activity_editor(name: str | None) -> None:
+    global _edit_activity
+    _edit_activity = name
+    with S.lock:
+        act = S.doc.activities().get(name.lower()) if name else None
+        mods = S.doc.modifier_names()[:MAX_MODIFIERS]
+    act = act or ev.Activity("", [("play", "randomA:2"), ("every", "20-120s")])
+    kind = act.kind or "action"
+    dpg.set_value("ae_name", act.name)
+    dpg.set_value("ae_kind", ev.ACTIVITY_KINDS[kind])
+    play = act.get("play")
+    if kind == "action":
+        word, arg = ev.split_action(play)
+        dpg.set_value("ae_act", ev.ACTION_LABEL.get(word, ev.ACTIONS[0][1]))
+        choices = _arg_choices(ev.ACTION_ARG.get(word))
+        dpg.set_value("ae_argc", next((c for c in choices if c == arg or c.split()[0] == arg), choices[0] if choices else ""))
+        dpg.set_value("ae_argt", arg)
+    m = re.match(r"playlist([AB]?):(\d+)", play, re.IGNORECASE)
+    dpg.set_value("ae_player", (m.group(1) or "A").upper() if m else "A")
+    dpg.set_value("ae_bank", m.group(2) if m else "1")
+    dpg.set_value("ae_shuffle", act.get("shuffle") == "1")
+    picks = []
+    if kind == "pick":
+        try:
+            picks = ev.parse_pick(play)
+        except ev.EventsError:
+            picks = []
+    for i in range(_ACT_PICKS):
+        dpg.set_value(f"ae_pick_{i}", picks[i][0] if i < len(picks) else "(none)")
+        dpg.set_value(f"ae_w_{i}", picks[i][1] if i < len(picks) else 1)
+    servos = {s.strip().lower() for s in act.get("servos").split(",")}
+    for i in range(1, 9):
+        dpg.set_value(f"ae_s{i}", f"s{i}" in servos)
+    for p, d in (("rest", 50), ("swing", 60), ("duty", 70), ("slew", 0), ("minActive", 1), ("intensity", 100)):
+        try:
+            dpg.set_value(f"ae_{p}", int(act.get(p, str(d))))
+        except ValueError:
+            dpg.set_value(f"ae_{p}", d)
+    dpg.set_value("ae_period", act.get("period", "3s"))
+    dpg.set_value("ae_dwell", act.get("dwell", "800ms"))
+    dpg.set_value("ae_every", act.get("every"))
+    dpg.set_value("ae_cooldown", act.get("cooldown"))
+    dpg.set_value("ae_startnow", act.get("start").lower() == "now")
+    try:
+        dpg.set_value("ae_seed", int(act.get("seed", "0")))
+    except ValueError:
+        dpg.set_value("ae_seed", 0)
+    held, modes, audio = act.when_parts()
+    for i in range(MAX_MODIFIERS):
+        shown = i < len(mods)
+        dpg.configure_item(f"ae_mod_{i}", show=shown, label=mods[i] if shown else "")
+        dpg.set_value(f"ae_mod_{i}", shown and mods[i] in held)
+    for mo in ev.MODES:
+        dpg.set_value(f"ae_mode_{mo}", mo in modes)
+    for a in ev.AUDIO_STATES:
+        dpg.set_value(f"ae_audio_{a}", a in audio)
+    dpg.set_value("ae_err", "")
+    dpg.configure_item("act_editor", show=True, label="Edit activity" if name else "New activity")
+    _act_preview()
+
+
+def _activity_ok() -> None:
+    name = (dpg.get_value("ae_name") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", name):
+        dpg.set_value("ae_err", "A name of 1-15 letters, digits or _")
+        return
+    entries = _act_entries()
+    kind = _act_kind()
+    if kind == "pick" and ev.format_pick([]) == dict(entries).get("play"):
+        dpg.set_value("ae_err", "Pick at least one sequence")
+        return
+    if kind == "alive" and not dict(entries).get("servos"):
+        dpg.set_value("ae_err", "Tick at least one servo")
+        return
+    if kind in ("action", "pick") and not dict(entries).get("every"):
+        dpg.set_value("ae_err", "Say how often (every = 30s, 20-120s, 2m ...)")
+        return
+    with S.lock:
+        if _edit_activity and _edit_activity.lower() != name.lower():
+            S.doc.delete_activity(_edit_activity)
+        S.doc.set_activity(name, entries)
+    dpg.configure_item("act_editor", show=False)
+    _changed()
+
+
+def _activity_test() -> None:
+    kind = _act_kind()
+    if kind == "action":
+        job_test([_act_action_text()])
+    elif kind == "pick":
+        first = next((dpg.get_value(f"ae_pick_{i}") for i in range(_ACT_PICKS)
+                      if dpg.get_value(f"ae_pick_{i}") not in ("", "(none)")), None)
+        if first:
+            job_test([f"seq:{first}"])
+    elif kind == "playlist":
+        job_test([f"next{dpg.get_value('ae_player')}:{dpg.get_value('ae_bank')}"])
+    else:
+        _set_status("Idle motion runs in AUTO: save to the robot and switch to AUTO to see it")
+
+
+def _delete_activity(name: str) -> None:
+    with S.lock:
+        S.doc.delete_activity(name)
+    _changed()
+
+
+def _build_activity_editor() -> None:
+    with dpg.window(tag="act_editor", label="Activity", modal=True, show=False, width=680, height=640):
+        with dpg.group(horizontal=True):
+            dpg.add_text("name")
+            dpg.add_input_text(tag="ae_name", width=160, callback=_act_preview)
+        dpg.add_radio_button(_ACT_KIND_LABELS, tag="ae_kind", default_value=_ACT_KIND_LABELS[0],
+                             callback=_act_preview)
+        with dpg.group(tag="ae_grp_action", horizontal=True):
+            dpg.add_combo(_ACTION_ITEMS[1:], tag="ae_act", width=230, default_value=ev.ACTIONS[0][1],
+                          callback=_act_preview)
+            dpg.add_combo([], tag="ae_argc", width=300, show=False, callback=_act_preview)
+            dpg.add_input_text(tag="ae_argt", width=300, show=False, callback=_act_preview)
+        with dpg.group(tag="ae_grp_playlist", show=False, horizontal=True):
+            dpg.add_text("player")
+            dpg.add_combo(["A", "B"], tag="ae_player", width=50, default_value="A", callback=_act_preview)
+            dpg.add_text("bank")
+            dpg.add_combo([str(b) for b in range(0, 11)], tag="ae_bank", width=60, default_value="1",
+                          callback=_act_preview)
+            dpg.add_checkbox(label="shuffle (each file once per round)", tag="ae_shuffle", callback=_act_preview)
+        with dpg.group(tag="ae_grp_pick", show=False):
+            dpg.add_text("Sequences and their weights (higher = picked more often):", color=COL_DIM)
+            for i in range(0, _ACT_PICKS, 2):
+                with dpg.group(horizontal=True):
+                    for j in (i, i + 1):
+                        dpg.add_combo(["(none)"], tag=f"ae_pick_{j}", width=170, default_value="(none)",
+                                      callback=_act_preview)
+                        dpg.add_input_int(tag=f"ae_w_{j}", width=90, default_value=1, min_value=1, max_value=100,
+                                          min_clamped=True, max_clamped=True, callback=_act_preview)
+        with dpg.group(tag="ae_grp_alive", show=False):
+            dpg.add_text("Servos (they move only in AUTO, within servo.sN.autoMin..autoMax):", color=COL_DIM)
+            with dpg.group(horizontal=True):
+                for i in range(1, 9):
+                    dpg.add_checkbox(label=f"s{i}", tag=f"ae_s{i}", callback=_act_preview)
+            for p, label, hi in (("rest", "rest (% of the AUTO range)", 100), ("swing", "swing (% it covers)", 100),
+                                 ("duty", "duty (% of the time moving)", 100), ("intensity", "intensity (%)", 200)):
+                dpg.add_slider_int(label=label, tag=f"ae_{p}", width=300, min_value=0, max_value=hi,
+                                   callback=_act_preview)
+            with dpg.group(horizontal=True):
+                dpg.add_text("one move")
+                dpg.add_input_text(tag="ae_period", width=80, hint="3s", callback=_act_preview)
+                dpg.add_text("pause")
+                dpg.add_input_text(tag="ae_dwell", width=80, hint="800ms", callback=_act_preview)
+                dpg.add_text("slew deg/s (0 = servo's)")
+                dpg.add_input_int(tag="ae_slew", width=90, min_value=0, max_value=1000, min_clamped=True,
+                                  max_clamped=True, callback=_act_preview)
+            with dpg.group(horizontal=True):
+                dpg.add_text("at least")
+                dpg.add_input_int(tag="ae_minActive", width=90, min_value=0, max_value=8, min_clamped=True,
+                                  max_clamped=True, callback=_act_preview)
+                dpg.add_text("servos moving at once")
+            dpg.add_text("Per-servo lines (s2.swing = 30 ...) are kept; edit them in the Text tab.",
+                         color=COL_DIM)
+        with dpg.group(horizontal=True):
+            dpg.add_text("every", tag="ae_every_label")
+            dpg.add_input_text(tag="ae_every", width=120, hint="20-120s", callback=_act_preview)
+            with dpg.group(tag="ae_grp_cooldown", horizontal=True):
+                dpg.add_text("no repeat within")
+                dpg.add_input_text(tag="ae_cooldown", width=90, hint="60s", callback=_act_preview)
+            dpg.add_checkbox(label="start at once", tag="ae_startnow", callback=_act_preview)
+            dpg.add_text("seed")
+            dpg.add_input_int(tag="ae_seed", width=90, min_value=0, min_clamped=True, callback=_act_preview)
+        dpg.add_text("Runs while (none ticked in a row = any):", color=COL_HEAD)
+        with dpg.group(horizontal=True):
+            dpg.add_text("mode:")
+            for mo in ev.MODES:
+                dpg.add_checkbox(label=mo, tag=f"ae_mode_{mo}", callback=_act_preview)
+        with dpg.group(horizontal=True):
+            dpg.add_text("sound mode:")
+            for a in ev.AUDIO_STATES:
+                dpg.add_checkbox(label=a, tag=f"ae_audio_{a}", callback=_act_preview)
+        with dpg.group(horizontal=True):
+            dpg.add_text("held:")
+            for i in range(MAX_MODIFIERS):
+                dpg.add_checkbox(label="", tag=f"ae_mod_{i}", show=False, callback=_act_preview)
+        dpg.add_separator()
+        dpg.add_text("", tag="ae_words", wrap=640)
+        dpg.add_text("", tag="ae_preview", color=COL_DIM)
+        dpg.add_text("", tag="ae_err", color=COL_BAD)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="OK", width=100, callback=_activity_ok)
+            dpg.add_button(label="Test now", width=100, callback=_activity_test)
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("Runs the action (or the first sequence, or the bank's next file) now.")
+            dpg.add_button(label="Cancel", width=100, callback=lambda: dpg.configure_item("act_editor", show=False))
+
+
+def _rebuild_activities(doc, problems) -> None:
+    dpg.delete_item("ev_acts", children_only=True)
+    acts = doc.activities()
+    if not acts:
+        dpg.add_text("No activities yet.", parent="ev_acts", color=COL_DIM)
+        return
+    bad: dict[str, str] = {}
+    for l in doc.lines:
+        if l.section.startswith("activity.") and id(l) in problems:
+            bad[l.section[9:]] = (bad.get(l.section[9:], "") + "\n" + problems[id(l)]).strip()
+    with dpg.table(parent="ev_acts", header_row=True, row_background=True, policy=dpg.mvTable_SizingStretchProp):
+        dpg.add_table_column(label="Name", init_width_or_weight=1)
+        dpg.add_table_column(label="What it does", init_width_or_weight=5)
+        dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=170)
+        for name, act in acts.items():
+            with dpg.table_row():
+                dpg.add_text(name, color=COL_BAD if name in bad else COL_TEXT)
+                dpg.add_text(act.describe(), wrap=700)
+                if name in bad:
+                    with dpg.tooltip(dpg.last_item()):
+                        dpg.add_text(bad[name], wrap=500)
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Edit", small=True, user_data=name,
+                                   callback=lambda s, a, u: _open_activity_editor(u))
+                    dpg.add_button(label="Delete", small=True, user_data=name,
+                                   callback=lambda s, a, u: _delete_activity(u))
+
+
+def _move(line_no: int, step: int) -> None:
+    with S.lock:
+        S.doc.move_entry(line_no, step)
+    _changed()
+
 # --------------------------------------------------------------------------- #
 # Views (render loop)
 # --------------------------------------------------------------------------- #
@@ -708,6 +1046,7 @@ def _rebuild() -> None:
     _rebuild_rules(doc, problems, loose, supported, loaded)
     _rebuild_mods(doc, problems)
     _rebuild_presets(doc, problems)
+    _rebuild_activities(doc, problems)
     _rebuild_settings(doc)
     dpg.set_value("ev_text", doc.text().replace("\r\n", "\n"))
 
@@ -727,7 +1066,7 @@ def _rebuild_rules(doc, problems, loose, supported, loaded) -> None:
         dpg.add_table_column(label="Do", init_width_or_weight=3)
         dpg.add_table_column(label="Only if", init_width_or_weight=2)
         dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=100)
-        dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=170)
+        dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=230)
         section_comment = ""
         for n, l in doc.rules():
             # The comment line just above a rule is shown as its heading
@@ -767,6 +1106,10 @@ def _rebuild_rules(doc, problems, loose, supported, loaded) -> None:
                                        enabled=supported, callback=lambda s, a, u: job_test(u))
                     dpg.add_button(label="Delete", small=True, user_data=n,
                                    callback=lambda s, a, u: _delete(u))
+                    dpg.add_button(label="^", small=True, user_data=n, callback=lambda s, a, u: _move(u, -1))
+                    with dpg.tooltip(dpg.last_item()):
+                        dpg.add_text("Move up (when two rules fire together, the upper one runs first)")
+                    dpg.add_button(label="v", small=True, user_data=n, callback=lambda s, a, u: _move(u, +1))
 
 
 def _rebuild_mods(doc, problems) -> None:
@@ -916,6 +1259,13 @@ def build() -> None:
         with dpg.tab(label="Modifiers"):
             dpg.add_button(label="Add modifier", callback=lambda: _open_mod_editor(None))
             dpg.add_group(tag="ev_mods")
+        with dpg.tab(label="Activities"):
+            dpg.add_text("Things the droid does by itself while their conditions hold: random sounds, "
+                         "music, a sequence now and then, idle motion in AUTO (firmware 2.32.0+).",
+                         color=COL_DIM, wrap=900)
+            dpg.add_button(label="Add activity", callback=lambda: _open_activity_editor(None))
+            with dpg.child_window(border=False, height=-1):
+                dpg.add_group(tag="ev_acts")
         with dpg.tab(label="Presets"):
             dpg.add_text("A preset sets any config settings by name (rule action preset:NAME). "
                          "Edit the lines, then Apply text.", color=COL_DIM, wrap=900)
@@ -951,6 +1301,7 @@ def build() -> None:
     _build_rule_editor()
     _build_mod_editor()
     _build_raw_editor()
+    _build_activity_editor()
 
 
 def update() -> None:

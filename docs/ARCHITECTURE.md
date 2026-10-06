@@ -63,8 +63,8 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `profiles/` | Per-robot telemetry layout + scale table + signature keys + optional Dashboard spec (see below) |
 | `app.py` | Dear PyGui desktop UI |
 | `cli.py` | Headless REPL for scripting/smoke tests |
-| `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O) |
-| `events_page.py` | The Events tab: rule / modifier editors, Learn, live inputs, fired markers, robot load/save |
+| `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O): rules, modifiers, presets, activities |
+| `events_page.py` | The Events tab: rule / modifier / activity editors, Learn, live inputs, fired markers, move up/down, robot load/save |
 | `tests/` | `py -m unittest discover tests`: the events.ini model, file commands against a simulated robot |
 
 ## Config paging is fully generic

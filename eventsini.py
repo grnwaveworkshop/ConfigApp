@@ -1,4 +1,4 @@
-"""events.ini as an editable document (Orchestron 2.30+), no UI and no I/O.
+"""events.ini as an editable document (Orchestron 2.30+; activities 2.32+), no UI and no I/O.
 
 The firmware's events.ini says what every transmitter control does: one rule per line,
 
@@ -40,32 +40,42 @@ COND_LABELS = {
     "range": "between two values",
 }
 
-# (action word, label, what its argument is: None, "seq", "wav", "bank", "mode", "audio",
-#  "preset", "rec")
+# (action word, label, what its argument is: None, "seq", "wav", "bank", "random" (a bank or
+#  FIRST-LAST), "mode", "audio", "preset", "set" (KEY=VALUE), "rec")
 ACTIONS: list[tuple[str, str, str | None]] = [
     ("seq", "Play sequence", "seq"),
     ("toggle", "Start / stop sequence", "seq"),
     ("stopseq", "Stop sequences", None),
     ("wavA", "Play WAV (player A)", "wav"),
     ("wavB", "Play WAV (player B)", "wav"),
-    ("randomA", "Random WAV from a bank (A)", "bank"),
-    ("randomB", "Random WAV from a bank (B)", "bank"),
+    ("randomA", "Random WAV (A)", "random"),
+    ("randomB", "Random WAV (B)", "random"),
+    ("nextA", "Next WAV in a bank (A)", "bank"),
+    ("nextB", "Next WAV in a bank (B)", "bank"),
     ("stopaudio", "Stop audio", None),
     ("stop", "Stop everything", None),
     ("mode", "Set the motion mode", "mode"),
-    ("audio", "Random sounds", "audio"),
+    ("audio", "Sound mode", "audio"),
     ("preset", "Apply a preset", "preset"),
+    ("set", "Change a setting", "set"),
     ("home", "Home the servos", None),
     ("rec", "Recorder", "rec"),
 ]
+ARG_HINTS = {
+    "random": "a bank (2) or numbers (2001-2013)",
+    "set": "setting=value, e.g. fx.pitch.amount=120",
+    "seq": "sequence name",
+    "wav": "WAV number",
+}
 ACTION_ARG = {word: arg for word, _label, arg in ACTIONS}
 ACTION_LABEL = {word: label for word, label, _arg in ACTIONS}
 ARG_CHOICES = {
     "mode": MODES,
-    "audio": ["manual", "random"],
+    "audio": ["manual", "random", "music"],
     "rec": ["toggle", "start", "stop"],
-    "bank": [str(b) for b in range(1, 11)],
+    "bank": [str(b) for b in range(0, 11)],
 }
+AUDIO_STATES = ["manual", "random", "music"]
 
 US_MIN, US_MAX = 500, 2500       # what the firmware accepts as microseconds
 
@@ -271,6 +281,8 @@ def split_action(text: str) -> tuple[str, str]:
         word = next((w for w in ACTION_ARG if w.lower() == word.strip().lower()), word.strip())
         if word.lower() == "random":
             word = "randomA"
+        if word.lower() == "next":
+            word = "nextA"
         return word, arg.strip()
     word = next((w for w in ACTION_ARG if w.lower() == t.lower()), None)
     if word is not None and ACTION_ARG[word] is None:
@@ -285,7 +297,15 @@ def join_action(word: str, arg: str = "") -> str:
 def describe_action(text: str) -> str:
     word, arg = split_action(text)
     if word == "audio":
-        return "Random sounds " + ("on" if arg.lower() == "random" else "off")
+        return {"random": "Random sounds on", "music": "Music on"}.get(arg.lower(), "Random sounds / music off")
+    if word == "set" and "=" in arg:
+        key, value = arg.split("=", 1)
+        return f"Set {key.strip()} to {value.strip()}"
+    if word in ("randomA", "randomB"):
+        what = f"numbered {arg}" if "-" in arg else f"from bank {arg}"
+        return f"Random WAV {what} ({word[-1]})"
+    if word in ("nextA", "nextB"):
+        return f"Next WAV in bank {arg} ({word[-1]})"
     label = ACTION_LABEL.get(word, word)
     return f"{label} {arg}".strip()
 
@@ -318,8 +338,8 @@ class Rule:
         return ", ".join(parts)
 
     def is_state_rule(self) -> bool:
-        """mode:, audio: and preset: rules also apply at power-up and link-up."""
-        return any(split_action(a)[0] in ("mode", "audio", "preset") for a in self.actions)
+        """mode:, audio:, preset: and set: rules also apply at power-up and link-up."""
+        return any(split_action(a)[0] in ("mode", "audio", "preset", "set") for a in self.actions)
 
     @staticmethod
     def parse(key: str, value: str) -> "Rule":
@@ -449,14 +469,53 @@ class EventsDoc:
         return out
 
     def sequence_names(self) -> list[str]:
-        """Sequences the rules name (seq: / toggle:)."""
+        """Sequences the rules and activities name (seq: / toggle: / pick(...))."""
         names: list[str] = []
         for _n, l in self.rules():
             for a in (l.rule.actions if l.rule else []):
                 word, arg = split_action(a)
                 if word in ("seq", "toggle") and arg and arg not in names:
                     names.append(arg)
+        for act in self.activities().values():
+            for name in act.sequence_names():
+                if name not in names:
+                    names.append(name)
         return names
+
+    # -- activities ----------------------------------------------------------- #
+    def activities(self) -> dict[str, "Activity"]:
+        """{name: Activity} from the [activity.NAME] sections, in file order."""
+        out: dict[str, Activity] = {}
+        for i, l in enumerate(self.lines):
+            if l.section.startswith("activity."):
+                a = out.setdefault(l.section[9:], Activity(l.section[9:], line_no=i + 1))
+                if l.key:
+                    a.entries.append((l.key, strip_comment(l.value)[0]))
+        return out
+
+    def set_activity(self, name: str, entries: list[tuple[str, str]]) -> None:
+        """Replace an [activity.NAME] section's settings (comments in it are kept)."""
+        self._replace_section("activity." + name, f"[activity.{name}]", entries, 10)
+
+    def delete_activity(self, name: str) -> None:
+        s = "activity." + name.lower()
+        self.lines = [l for l in self.lines if l.section != s]
+
+    # -- moving rules ----------------------------------------------------------- #
+    def move_entry(self, line_no: int, step: int) -> int:
+        """Swap a key = value line with the previous (step -1) or next (+1) one in its section,
+        leaving comments and blank lines where they are. Returns its new line number."""
+        if not 1 <= line_no <= len(self.lines) or not self.lines[line_no - 1].key:
+            return line_no
+        section = self.lines[line_no - 1].section
+        i = line_no - 1 + step
+        while 0 <= i < len(self.lines) and self.lines[i].section == section and not self.lines[i].key:
+            i += step
+        if not (0 <= i < len(self.lines)) or self.lines[i].section != section or not self.lines[i].key:
+            return line_no
+        a, b = line_no - 1, i
+        self.lines[a], self.lines[b] = self.lines[b], self.lines[a]
+        return b + 1
 
     def rule_at(self, line_no: int) -> Line | None:
         if 1 <= line_no <= len(self.lines):
@@ -520,16 +579,140 @@ class EventsDoc:
             return line_no
         return self._insert("modifiers", "[modifiers]", raw)
 
-    def set_preset(self, name: str, entries: list[tuple[str, str]]) -> None:
-        """Replace a [preset.NAME] section's settings (comments in it are kept)."""
-        s = "preset." + name.lower()
+    def _replace_section(self, section: str, header: str, entries: list[tuple[str, str]], width: int) -> None:
+        """Replace a section's key = value lines. Comment lines stay, and a key that is
+        written again keeps its end-of-line comment."""
+        s = section.lower()
+        comments = {l.key.lower(): strip_comment(l.value)[1] for l in self.lines if l.section == s and l.key}
         self.lines = [l for l in self.lines if not (l.section == s and l.key)]
         for key, value in entries:
-            self._insert(s, f"[preset.{name}]", f"{key} = {value}")
+            raw = f"{key:<{width}}= {value}" if width else f"{key} = {value}"
+            comment = comments.get(key.lower(), "")
+            self._insert(s, header, f"{raw:<30} {comment}" if comment else raw)
+
+    def set_preset(self, name: str, entries: list[tuple[str, str]]) -> None:
+        """Replace a [preset.NAME] section's settings (comments in it are kept)."""
+        self._replace_section("preset." + name, f"[preset.{name}]", entries, 0)
 
     def delete_preset(self, name: str) -> None:
         s = "preset." + name.lower()
         self.lines = [l for l in self.lines if l.section != s]
+
+
+# --------------------------------------------------------------------------- #
+# Activities ([activity.NAME], Orchestron 2.32+)
+# --------------------------------------------------------------------------- #
+ACTIVITY_KINDS = {
+    "action": "Do an action every so often",
+    "playlist": "Play a bank, one file after another",
+    "pick": "Pick a sequence now and then",
+    "alive": "Idle motion (AUTO)",
+}
+ALIVE_PARAMS = ["rest", "swing", "period", "dwell", "duty", "slew"]
+
+
+def parse_pick(text: str) -> list[tuple[str, int]]:
+    """'pick(nod 3, look 2, shrug)' (or 'seq:pick(...)') -> [('nod', 3), ('look', 2), ('shrug', 1)]."""
+    t = text.strip()
+    if t.lower().startswith("seq:"):
+        t = t[4:].strip()
+    m = re.fullmatch(r"pick\((.*)\)", t, re.IGNORECASE)
+    if not m:
+        raise EventsError(f"expected pick(name weight, ...): {text}")
+    out = []
+    for item in (x.strip() for x in m.group(1).split(",") if x.strip()):
+        parts = item.split()
+        weight = _int(parts[1], 1, 100, "pick weight") if len(parts) > 1 else 1
+        out.append((parts[0], weight))
+    return out
+
+
+def format_pick(items: list[tuple[str, int]]) -> str:
+    return "pick(" + ", ".join(f"{n} {w}" for n, w in items) + ")"
+
+
+@dataclass
+class Activity:
+    name: str
+    entries: list[tuple[str, str]] = field(default_factory=list)   # (key, value), file order
+    line_no: int = 0
+
+    def get(self, key: str, default: str = "") -> str:
+        for k, v in self.entries:
+            if k.lower() == key.lower():
+                return v
+        return default
+
+    @property
+    def kind(self) -> str:
+        if self.get("servos"):
+            return "alive"
+        play = self.get("play").strip().lower()
+        if not play:
+            return ""
+        if play.startswith(("pick(", "seq:pick(")):
+            return "pick"
+        if play.startswith("playlist"):
+            return "playlist"
+        return "action"
+
+    def sequence_names(self) -> list[str]:
+        if self.kind == "pick":
+            try:
+                return [n for n, _w in parse_pick(self.get("play"))]
+            except EventsError:
+                return []
+        if self.kind == "action":
+            word, arg = split_action(self.get("play"))
+            return [arg] if word in ("seq", "toggle") and arg else []
+        return []
+
+    def when_parts(self) -> tuple[list[str], list[str], list[str]]:
+        """(modifiers, modes, audio states) from when=."""
+        mods, modes, audio = [], [], []
+        for item in (w.strip() for w in self.get("when").split("+") if w.strip()):
+            low = item.lower()
+            if low.startswith("mode."):
+                modes += [m.replace("mode.", "") for m in low[5:].split("|")]
+            elif low.startswith("audio."):
+                audio += low[6:].split("|")
+            else:
+                mods.append(item)
+        return mods, modes, audio
+
+    def describe(self) -> str:
+        kind = self.kind
+        play = self.get("play")
+        if kind == "action":
+            what = describe_action(play)
+        elif kind == "playlist":
+            m = re.match(r"playlist([AB]?):(\d+)", play, re.IGNORECASE)
+            player = (m.group(1) or "A").upper() if m else "?"
+            what = f"Play bank {m.group(2) if m else '?'} ({player})" + (", shuffled" if self.get("shuffle") == "1" else ", in order")
+        elif kind == "pick":
+            try:
+                what = "Pick one of " + ", ".join(f"{n} ({w})" for n, w in parse_pick(play))
+            except EventsError as e:
+                what = str(e)
+        elif kind == "alive":
+            what = "Idle motion for " + self.get("servos")
+        else:
+            what = "(nothing to do: needs play = or servos =)"
+        every = self.get("every")
+        if every:
+            what += (", then a gap of " if kind == "playlist" else ", every ") + every
+        cooldown = self.get("cooldown")
+        if cooldown:
+            what += f", no repeat within {cooldown}"
+        mods, modes, audio = self.when_parts()
+        cond = [f"{m} held" for m in mods]
+        if modes:
+            cond.append("in " + " / ".join(modes))
+        if audio:
+            cond.append("when sound mode is " + " / ".join(audio))
+        if kind == "alive" and "auto" not in modes:
+            cond.append("in AUTO")
+        return what + (" - " + ", ".join(cond) if cond else "")
 
 
 NEW_FILE = """; events.ini - what the transmitter's switches, sticks and button pad do
