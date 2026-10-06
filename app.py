@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import dearpygui.dearpygui as dpg                                        # noqa: E402
 
+import events_page                                                      # noqa: E402
 import pages as pages_mod                                                # noqa: E402
 import profiles                                                          # noqa: E402
 from client import RobotClient                                           # noqa: E402
@@ -229,6 +230,11 @@ def _force_disconnect(status: str) -> None:
                 b.stream(0)        # politely stop the firmware streaming
             except Exception:      # noqa: BLE001 - expected on a dead link
                 pass
+            if events_page.S.supported:
+                try:
+                    b.rule_notices(False)
+                except Exception:  # noqa: BLE001
+                    pass
         try:
             b.close()
         except Exception:  # noqa: BLE001
@@ -247,6 +253,7 @@ def _force_disconnect(status: str) -> None:
         state.rec_text = ""
         state.dirty.clear()        # drop queued edits; they can never land now
         state.desc_pending.clear()  # a queued fetch step sees the empty list and stops
+    events_page.on_disconnect()
     _reset_plot_buffers()
     set_status(status)
 
@@ -444,6 +451,7 @@ def job_connect(transport) -> None:
             state.desc_pending.clear()
             state.desc_fetching = False
             state.desc_new = set()
+        events_page.on_connect(b, fw, profiles.active.NAME)
         set_status(f"Connected - {profiles.active.NAME}, fw {fw // 10000}.{(fw // 100) % 100}.{fw % 100}, "
                    f"{len(params)} params")
     io_q.put(run)
@@ -518,7 +526,7 @@ def job_mtp_toggle() -> None:
 
 
 def job_action(command: str) -> None:
-    """Run one action on the robot (<KA,command>) - same vocabulary as its buttons.ini."""
+    """Run one action on the robot (<KA,command>) - same vocabulary as its events.ini."""
     def run() -> None:
         if not link_is_up():
             return
@@ -1058,7 +1066,7 @@ def build_layout() -> None:
                     dpg.add_group(tag="dash_plots")
 
             with dpg.tab(label="Actions"):
-                dpg.add_text("Run things on the robot. Any action its buttons.ini understands works "
+                dpg.add_text("Run things on the robot. Any action its events.ini understands works "
                              "here too, e.g. seq:wave, wavA:2001, randomA:2, mode:control, rec:toggle.",
                              wrap=900, color=(160, 160, 160))
                 with dpg.group(horizontal=True):
@@ -1074,9 +1082,15 @@ def build_layout() -> None:
                 with dpg.child_window(border=False, height=-1):
                     dpg.add_group(tag="actions_group")
 
+            with dpg.tab(label="Events"):
+                events_page.build()
+
 
 def main() -> int:
     global io_running
+    events_page.init(io_put=io_q.put, get_bot=lambda: bot if link_is_up() else None,
+                     set_status=set_status, param_keys=lambda: [p.key for p in state.params],
+                     on_saved=job_refresh_actions)   # rules name the sequences the Actions tab lists
     dpg.create_context()
     build_layout()
     dpg.create_viewport(title=f"Droid Config v{__version__}", width=1100, height=760)
@@ -1169,6 +1183,7 @@ def main() -> int:
                 state.telemetry = None
         update_plots()
 
+        events_page.update()
         flush_dirty()
         dpg.render_dearpygui_frame()
 

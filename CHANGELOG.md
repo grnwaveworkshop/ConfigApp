@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-10-05
+
+### Added
+- **Events tab** (Orchestron 2.31.0+): edit the robot's `events.ini`, what the transmitter's
+  switches, sticks and button pad do, without touching the text or the SD card.
+  - **Load from robot / Save to robot.** The file goes over `<KF...>` in CRC-checked chunks;
+    the robot keeps the old one as `events.ini.bak`, loads the new one at once and reports
+    every line it didn't accept. That row turns red, with the reason on hover.
+  - **Rules:** every rule in words (*pad button 3 click: Home the servos, in idle / manual*),
+    grouped under the file's own comments, with Edit, Test and Delete.
+  - **Rule editor:**
+    - the trigger (pad button + gesture, channel + position, RC link, mode change)
+    - up to three actions, with dropdowns of the card's sequences (`sequences.ini`), WAV files,
+      modes and presets
+    - modifiers, and the modes it's limited to
+    - a preview of the line it writes, and **Test now**
+  - **Learn:** move a switch or stick and the editor picks the channel and position (a switch
+    end or the middle as low / mid / high, anything else as a value). A live bar shows the
+    channel and says when the condition is met.
+  - **Fired:** while connected, a row shows *fired* each time its rule runs on the robot
+    (`<KV>`).
+  - **Modifiers**, **Presets** (as `key = value` lines) and **Settings** (deadband, pad channel)
+    tabs; **Inputs** shows all 24 channels live; **Text** shows the whole file.
+  - **Open file... / Save file... / New** work offline, for a card in a card reader.
+  - A load / edit / save changes only the lines you edited: comments, blank lines and the order
+    stay as you wrote them.
+- **`eventsini.py`:** the events.ini model, pure and round-trip safe.
+- **`events_page.py`:** the tab, kept out of `app.py`.
+- **`client.py`:** `inputs()`, `wav_files()`, `read_file()`, `write_file()`, `events_report()`,
+  `rule_notices()`, `set_notice_handler()`. `protocol.py` routes `<KV,line>` notices like
+  telemetry, so they are never taken for a reply.
+- **Tests:** `tests/` (run `py -m unittest discover tests`), standard library only:
+  - the events.ini model
+  - the file commands against a simulated robot, including the firmware's 63-character frame
+    limit and a damaged upload
+
+### Changed
+- The Actions tab says `events.ini` (Orchestron 2.30.0 replaced `buttons.ini`).
+
+---
+
 ## [0.7.0] - 2026-10-05
 
 ### Added

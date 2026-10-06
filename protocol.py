@@ -25,6 +25,9 @@ CATEGORY = "K"
 
 # Frames whose payload starts with this are telemetry, not a command reply.
 _TELEMETRY_TAG = CATEGORY + "T"
+# Rule-fired notices (Orchestron 2.31.0, after <KV1>): <KV,line>. Also not a reply - the
+# reply to <KV1> itself is <KV1>, without the comma.
+_NOTICE_TAG = CATEGORY + "V,"
 
 
 class ProtocolError(Exception):
@@ -44,16 +47,23 @@ class Protocol:
         self._lock = threading.Lock()
         self._resp: "queue.Queue[str]" = queue.Queue()
         self._on_telemetry: Callable[[str], None] | None = None
+        self._on_notice: Callable[[str], None] | None = None
         transport.set_on_bytes(self._on_bytes)
 
     def set_telemetry_handler(self, cb: Callable[[str], None] | None) -> None:
         self._on_telemetry = cb
+
+    def set_notice_handler(self, cb: Callable[[str], None] | None) -> None:
+        self._on_notice = cb
 
     def _on_bytes(self, data: bytes) -> None:
         for frame in self._reader.feed(data):
             if frame.startswith(_TELEMETRY_TAG):
                 if self._on_telemetry:
                     self._on_telemetry(frame)
+            elif frame.startswith(_NOTICE_TAG):
+                if self._on_notice:
+                    self._on_notice(frame)
             else:
                 self._resp.put(frame)
 

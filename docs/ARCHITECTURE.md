@@ -28,6 +28,24 @@ module, transparent UART bridge), category letter
 <KR##>        -> <KR##,mask> then <KT,...>  stream at ## Hz (0=stop)
 ```
 
+Orchestron 2.31.0+ adds, for the Events tab:
+
+```
+<KI>                  -> <KI,linkUp,pad,us1..us24>   inputs now (Learn, live bars)
+<KFL> / <KFL##>       -> <KFL,count> / <KFL##,name>  WAV files
+<KFR,name,offset>     -> <KFR,offset,total,hex>      read 96 bytes (total -1 = no file)
+<KFO,name,size>       -> <KFO,size>                  start an upload (events.ini, sequences.ini)
+<KFW,hex>             -> <KFW,received>              28 bytes a chunk (inbound frames <= 63 chars)
+<KFC,crc32>           -> <KFC,size>                  CRC matches: written, old file kept as .bak
+<KU> / <KUR>          -> <KU,rules,problems>         last load's report (<KUR> reloads first)
+<KU##>                -> <KU##,line,text>            problem ##
+<KV1> / <KV0>         -> <KV1> / <KV0>, then <KV,line> each time a rule fires (routed like telemetry)
+<KE0,code>            3 file not allowed, 4 SD busy, 5 upload refused, 6 SD write failed
+```
+
+Line numbers are 1-based file lines. The Events tab keys problems and fired notices to the
+line objects of the file the robot loaded, so they stay on the right row while you edit.
+
 Key ids are positional indices into the firmware's `ConfigParams.def` -
 append-only, never reordered. The app re-learns the full key map every
 connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
@@ -45,6 +63,9 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `profiles/` | Per-robot telemetry layout + scale table + signature keys + optional Dashboard spec (see below) |
 | `app.py` | Dear PyGui desktop UI |
 | `cli.py` | Headless REPL for scripting/smoke tests |
+| `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O) |
+| `events_page.py` | The Events tab: rule / modifier editors, Learn, live inputs, fired markers, robot load/save |
+| `tests/` | `py -m unittest discover tests`: the events.ini model, file commands against a simulated robot |
 
 ## Config paging is fully generic
 

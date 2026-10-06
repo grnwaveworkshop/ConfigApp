@@ -14,6 +14,7 @@ without the caller having to say which robot this is.
 """
 from __future__ import annotations
 
+import zlib
 from collections.abc import Callable
 
 import models
@@ -23,6 +24,16 @@ from protocol import CATEGORY, Protocol, ProtocolError, split_frame
 from transport import Transport
 
 _ERR = CATEGORY + "E"
+
+# <KE0,code> codes for the file / events commands (Orchestron CommandProtocol.hpp)
+FILE_ERRORS = {
+    1: "this firmware has no file commands",
+    3: "the robot doesn't allow that file",
+    4: "the SD card is busy (no card, MTP mode, or a recording is running)",
+    5: "the upload was refused (too big, or it arrived damaged)",
+    6: "writing the SD card failed (the old file was kept)",
+}
+WRITE_CHUNK = 28        # bytes per <KFW,hex>: the firmware reads at most 63 characters a frame
 
 
 class RobotClient:
@@ -162,6 +173,93 @@ class RobotClient:
         if tag != CATEGORY + "A" or not args:
             raise ProtocolError(f"action not supported by this firmware: {tag},{args}")
         return args[0] == "1", ",".join(args[1:]).strip()
+
+    # -- events.ini editor (Orchestron 2.31.0+) ------------------------------- #
+    def _file_request(self, body: str, timeout: float = 1.5) -> list[str]:
+        tag, args = split_frame(self.proto.request(body, timeout=timeout))
+        if tag.startswith(_ERR):
+            code = int(args[0]) if args and args[0].isdigit() else 0
+            raise ProtocolError(FILE_ERRORS.get(code, f"error {code}"))
+        return [tag] + args
+
+    def inputs(self) -> tuple[bool, int, list[int]]:
+        """<KI> - (link up, pad button held 0-14, channels 1-24 in microseconds)."""
+        reply = self._file_request(f"{CATEGORY}I")
+        if reply[0] != CATEGORY + "I" or len(reply) < 3:
+            raise ProtocolError(f"bad <KI> reply: {reply}")
+        return reply[1] == "1", int(reply[2]), [int(v) for v in reply[3:]]
+
+    def wav_files(self) -> list[str]:
+        """<KFL> + <KFL##> - the WAV files on the SD card (for wavA: / wavB: actions)."""
+        reply = self._file_request(f"{CATEGORY}FL")
+        out = []
+        for i in range(int(reply[1])):
+            r = self._file_request(f"{CATEGORY}FL{i}")
+            out.append(",".join(r[1:]))
+        return out
+
+    def read_file(self, name: str, progress: Callable[[int, int], None] | None = None) -> bytes | None:
+        """<KFR> in 96-byte chunks. None if the file doesn't exist on the card."""
+        data = bytearray()
+        while True:
+            r = self._file_request(f"{CATEGORY}FR,{name},{len(data)}")
+            total = int(r[2])
+            if total < 0:
+                return None
+            chunk = bytes.fromhex(r[3]) if len(r) > 3 else b""
+            data += chunk
+            if progress:
+                progress(len(data), total)
+            if len(data) >= total or not chunk:
+                return bytes(data[:total])
+
+    def write_file(self, name: str, data: bytes, progress: Callable[[int, int], None] | None = None) -> None:
+        """<KFO> / <KFW>... / <KFC>: upload a file. The robot keeps it in RAM until all of it has
+        arrived with the right CRC, then writes it (keeping the old one as NAME.bak). Raises
+        ProtocolError if anything goes wrong - the file on the card is then unchanged."""
+        self._file_request(f"{CATEGORY}FO,{name},{len(data)}")
+        try:
+            for i in range(0, len(data), WRITE_CHUNK):
+                self._file_request(f"{CATEGORY}FW,{data[i:i + WRITE_CHUNK].hex()}")
+                if progress:
+                    progress(min(i + WRITE_CHUNK, len(data)), len(data))
+            self._file_request(f"{CATEGORY}FC,{zlib.crc32(data):08x}", timeout=5.0)
+        except ProtocolError:
+            try:
+                self.proto.request(f"{CATEGORY}FX")
+            except ProtocolError:
+                pass
+            raise
+
+    def events_report(self, reload: bool = False) -> tuple[int, list[tuple[int, str]]]:
+        """<KU> (<KUR> reloads events.ini first) + <KU##>: (rules loaded, [(line, problem)]).
+        Line 0 means the problem isn't one line (no SD card, a sequence that didn't load)."""
+        r = self._file_request(f"{CATEGORY}U{'R' if reload else ''}", timeout=5.0 if reload else 1.5)
+        rules, count = int(r[1]), int(r[2])
+        problems = []
+        for i in range(min(count, 16)):
+            p = self._file_request(f"{CATEGORY}U{i}")
+            problems.append((int(p[1]), ",".join(p[2:]).strip()))
+        if count > 16:
+            problems.append((0, f"... and {count - 16} more (see the robot's console)"))
+        return rules, problems
+
+    def rule_notices(self, on: bool) -> None:
+        """<KV1> / <KV0> - the robot sends <KV,line> each time an events.ini rule fires."""
+        self._file_request(f"{CATEGORY}V{1 if on else 0}")
+
+    def set_notice_handler(self, cb: Callable[[int], None] | None) -> None:
+        """cb(line) for each rule-fired notice; runs on the transport's reader thread."""
+        if cb is None:
+            self.proto.set_notice_handler(None)
+            return
+
+        def _wrap(frame: str) -> None:
+            _tag, args = split_frame(frame)
+            if args and args[0].isdigit():
+                cb(int(args[0]))
+
+        self.proto.set_notice_handler(_wrap)
 
     # -- param map ---------------------------------------------------------- #
     def refresh_params(self) -> dict[str, ParamInfo]:
