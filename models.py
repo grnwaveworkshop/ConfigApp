@@ -89,3 +89,30 @@ class TelemetryFrame:
     @property
     def mode_name(self) -> str:
         return profiles.active.MODE_NAMES.get(int(self.raw.get("mode", -1)), "?")
+
+
+@dataclass
+class ProfilerStatus:
+    """<KQ> (Orchestron 2.34+): the loop profiler and the audio interrupt's load."""
+    sections: int
+    enabled: bool
+    auto_report: bool           # the robot prints a report on its console every 5 s
+    audio_cpu: float = 0.0      # % of the CPU in the audio interrupt, now and the max
+    audio_cpu_max: float = 0.0
+    blocks: int = 0             # audio memory blocks in use, the max, and how many there are
+    blocks_max: int = 0
+    blocks_total: int = 0
+
+
+@dataclass
+class ProfileSection:
+    """<KQ##>: one part of the robot's main loop. Times in microseconds; 0 = no data yet."""
+    id: int
+    name: str
+    calls: int
+    dur_min: int
+    dur_avg: int
+    dur_max: int
+    period_min: int
+    period_avg: int
+    period_max: int

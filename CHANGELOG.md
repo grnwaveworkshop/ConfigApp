@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-10-07
+
+### Added (Orchestron 2.34.0)
+- **Loop profiler on the Dashboard.** A "Loop profiler" section (closed until you open it) shows
+  each part of the robot's main loop: calls, average and longest time, its share of the loop,
+  how often it runs and its longest gap. Sections whose longest run is 1 ms or more are amber.
+  Above the table: the audio interrupt's CPU share and audio memory, now and the max.
+  **Profiling on** switches the robot's profiler on or off (it starts off); **Reset** clears the
+  statistics. Polled once a second while open (every 3 s over BLE). Hidden on firmware without
+  `<KQ>`.
+
 ## [0.9.2] - 2026-10-07
 
 ### Changed (Orchestron 2.33.0)

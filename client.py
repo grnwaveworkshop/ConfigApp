@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 import models
 import profiles
-from models import ParamInfo, TelemetryFrame
+from models import ParamInfo, ProfilerStatus, ProfileSection, TelemetryFrame
 from protocol import CATEGORY, Protocol, ProtocolError, split_frame
 from transport import Transport
 
@@ -260,6 +260,28 @@ class RobotClient:
                 cb(int(args[0]))
 
         self.proto.set_notice_handler(_wrap)
+
+    # -- loop profiler (Orchestron 2.34+) ------------------------------------ #
+    def profiler(self, command: str = "") -> ProfilerStatus | None:
+        """<KQ>: the profiler's state. command "R" resets it first, "E1" / "E0" switches it
+        on / off first. None when the firmware has no profiler command."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}Q{command}"))
+        if tag != CATEGORY + "Q" or len(args) < 3:
+            return None
+        nums = [float(a) for a in args[3:8]] + [0.0] * (5 - len(args[3:8]))
+        return ProfilerStatus(int(args[0]), args[1] == "1", args[2] == "1", nums[0], nums[1],
+                              int(nums[2]), int(nums[3]), int(nums[4]))
+
+    def profiler_section(self, section: int) -> ProfileSection:
+        """<KQ##>: one section's statistics."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}Q{section}"))
+        if tag != f"{CATEGORY}Q{section}" or len(args) < 8:
+            raise ProtocolError(f"bad <KQ{section}> reply: {tag},{args}")
+        return ProfileSection(section, args[0], *(int(a) for a in args[1:8]))
+
+    def profiler_sections(self, status: ProfilerStatus) -> list[ProfileSection]:
+        """Every section, in the robot's order."""
+        return [self.profiler_section(i) for i in range(status.sections)]
 
     # -- param map ---------------------------------------------------------- #
     def refresh_params(self) -> dict[str, ParamInfo]:

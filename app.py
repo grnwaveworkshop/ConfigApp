@@ -15,7 +15,8 @@ pages when you know part of a key name.
 
 The Dashboard tab is profile-driven: a profile with a DASHBOARD spec gets
 titled panels plus rolling plots; one without gets a generic grid of
-whatever telemetry fields it streams.
+whatever telemetry fields it streams. Firmware with a loop profiler (<KQ>,
+Orchestron 2.34+) also gets a "Loop profiler" table, polled while it is open.
 
 Threading model: all droid I/O runs on a single background worker thread fed
 by a job queue; the render loop polls shared state, rebuilds the page when
@@ -47,6 +48,9 @@ from transport import (HM10_DEFAULT_NAME, BleTransport,                   # noqa
 from version import __version__                                          # noqa: E402
 
 DEBOUNCE_S = 0.12
+PROF_POLL_S = 1.0        # loop profiler table refresh while open (BLE: PROF_POLL_BLE_S)
+PROF_POLL_BLE_S = 3.0    # 16 replies a sweep: keep a 9600-baud BLE link free for the rest
+PROF_SLOW_US = 1000      # a section whose longest run is this long is shown in amber
 DEFAULT_STREAM_HZ = 10
 PLOT_POINTS = 400        # rolling history per series (~20 s at 20 Hz)
 
@@ -97,6 +101,11 @@ class AppState:
         self.controls_ready = False            # render loop should rebuild the Controls panel
         self.controls_file: Path | None = None
         self.last_telemetry = 0.0              # time.time() of the last <KT> frame
+        # Loop profiler (<KQ>, Orchestron 2.34+): None = this firmware has none
+        self.prof = None                       # ProfilerStatus
+        self.prof_rows: list = []              # [ProfileSection], the last sweep
+        self.prof_ready = False                # render loop should refresh the panel
+        self.prof_poll_due = 0.0
         self.rec_poll_due = 0.0                # next rec:status poll (only while no telemetry)
 
 
@@ -251,6 +260,9 @@ def _force_disconnect(status: str) -> None:
         state.controls_ready = True    # the panel hides while disconnected
         state.rec_state = None
         state.rec_text = ""
+        state.prof = None
+        state.prof_rows = []
+        state.prof_ready = True        # the profiler panel hides
         state.dirty.clear()        # drop queued edits; they can never land now
         state.desc_pending.clear()  # a queued fetch step sees the empty list and stops
     events_page.on_disconnect()
@@ -420,6 +432,10 @@ def job_connect(transport) -> None:
                 acts = b.actions()       # [] on firmware without <KA>
             except ProtocolError:
                 acts = []
+            try:
+                prof = b.profiler()      # None on firmware without <KQ>
+            except ProtocolError:
+                prof = None
         except Exception:
             # Never leave an opened-but-unusable transport behind: it holds the
             # COM port and blocks the next connect attempt.
@@ -442,6 +458,9 @@ def job_connect(transport) -> None:
             state.actions_ready = True
             state.rec_state = None
             state.rec_text = ""
+            state.prof = prof
+            state.prof_rows = []
+            state.prof_ready = True
             state.controls_file = _controls_file(profiles.active.NAME)
             state.controls = _load_controls(state.controls_file)
             state.controls_ready = True
@@ -552,6 +571,26 @@ def job_rec_poll() -> None:
         except ProtocolError:
             return
         _rec_from_reply(msg)
+    io_q.put(run)
+
+
+def job_profiler(command: str = "") -> None:
+    """<KQ> for the Dashboard's profiler panel, with every section while profiling is on.
+    command: "R" reset, "E1" / "E0" on / off (see RobotClient.profiler)."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            st = bot.profiler(command)
+            rows = bot.profiler_sections(st) if st is not None and st.enabled else None
+        except ProtocolError as e:
+            set_status(f"Profiler: {e}")
+            return
+        with state.lock:
+            state.prof = st
+            if rows is not None or command == "R":
+                state.prof_rows = rows or []
+            state.prof_ready = True
     io_q.put(run)
 
 
@@ -870,6 +909,42 @@ def build_controls() -> None:
     dpg.add_separator(parent="controls_group")
 
 
+def build_profiler() -> None:
+    """The Dashboard's Loop profiler panel: the switch, the audio load and one row per
+    section of the robot's main loop. Hidden on firmware without <KQ>."""
+    st = state.prof
+    dpg.configure_item("prof_header", show=st is not None)
+    if st is None:
+        return
+    dpg.set_value("prof_on", st.enabled)
+    dpg.set_value("prof_audio", f"Audio interrupt {st.audio_cpu:.1f}% of the CPU (max {st.audio_cpu_max:.1f}%)"
+                                f"   audio blocks {st.blocks} (max {st.blocks_max} of {st.blocks_total})")
+    dpg.delete_item("prof_table", children_only=True)
+    if not st.enabled:
+        dpg.add_text("Profiling is off. Switch it on to time each part of the robot's loop "
+                     "(it costs the robot a few microseconds a pass).",
+                     parent="prof_table", color=(200, 160, 100), wrap=900)
+        if not state.prof_rows:
+            return
+    # Share of the loop: a section's total time over the whole loop's, when one is called "loop"
+    loop = next((r for r in state.prof_rows if r.name == "loop"), None)
+    loop_total = loop.dur_avg * loop.calls if loop else 0
+    cols = ["Section", "Calls", "Time avg us", "Time max us", "% of loop", "Every (avg) ms", "Longest gap ms"]
+    with dpg.table(parent="prof_table", header_row=True, policy=dpg.mvTable_SizingFixedFit,
+                   row_background=True, borders_innerH=False):
+        for c in cols:
+            dpg.add_table_column(label=c)
+        for r in state.prof_rows:
+            color = (235, 180, 90) if r.dur_max >= PROF_SLOW_US else (220, 220, 220)
+            share = (f"{100.0 * r.dur_avg * r.calls / loop_total:.1f}"
+                     if loop_total and r is not loop and r.calls else "")
+            with dpg.table_row():
+                for text in (r.name, str(r.calls), str(r.dur_avg), str(r.dur_max), share,
+                             f"{r.period_avg / 1000:.2f}" if r.calls > 1 else "",
+                             f"{r.period_max / 1000:.2f}" if r.calls > 1 else ""):
+                    dpg.add_text(text, color=color)
+
+
 def _reset_plot_buffers() -> None:
     """Drop rolling history (called on connect/disconnect and on a layout rebuild)."""
     with state.lock:
@@ -1061,6 +1136,18 @@ def build_layout() -> None:
                 dpg.add_separator()
                 dpg.add_text("State: -", tag="d_mode")
                 with dpg.child_window(border=False, height=-1):
+                    # Firmware with <KQ> (Orchestron 2.34+); polled only while open
+                    with dpg.collapsing_header(label="Loop profiler", tag="prof_header",
+                                               default_open=False, show=False):
+                        with dpg.group(horizontal=True):
+                            dpg.add_checkbox(label="Profiling on", tag="prof_on",
+                                             callback=lambda s, a: job_profiler("E1" if a else "E0"))
+                            dpg.add_button(label="Reset", callback=lambda: job_profiler("R"))
+                            with dpg.tooltip(dpg.last_item()):
+                                dpg.add_text("Clear every section's statistics and the audio maxima")
+                            dpg.add_text("", tag="prof_audio", color=(160, 160, 160))
+                        dpg.add_group(tag="prof_table")
+                        dpg.add_spacer(height=6)
                     dpg.add_group(tag="dash_fields")
                     dpg.add_spacer(height=6)
                     dpg.add_group(tag="dash_plots")
@@ -1117,6 +1204,9 @@ def main() -> int:
             state.actions_ready = False
             need_controls = state.controls_ready
             state.controls_ready = False
+            need_prof = state.prof_ready
+            state.prof_ready = False
+            has_prof = state.prof is not None
             can_record = any(cmd == "rec:toggle" for _g, _l, cmd in state.actions)
             rec_state = state.rec_state
             rec_text = state.rec_text
@@ -1140,6 +1230,8 @@ def main() -> int:
             build_actions()
         if need_controls:
             build_controls()
+        if need_prof:
+            build_profiler()
         rec_theme = "theme_recording" if (connected and rec_state == 1) else 0
         dpg.bind_item_theme("btn_rec", rec_theme)
         if dpg.does_item_exist("ctl_rec"):
@@ -1151,6 +1243,11 @@ def main() -> int:
                 and now >= state.rec_poll_due and io_q.empty():
             state.rec_poll_due = now + 1.0
             job_rec_poll()
+        if connected and has_prof and dpg.get_value("prof_header") \
+                and now >= state.prof_poll_due and io_q.empty():
+            ble = isinstance(getattr(bot, "t", None), BleTransport)
+            state.prof_poll_due = now + (PROF_POLL_BLE_S if ble else PROF_POLL_S)
+            job_profiler()
         dpg.set_value("confirm_text", confirm)
         dpg.configure_item("confirm_text",
                            color=(220, 120, 120) if confirm.startswith("\u2717") else (150, 220, 150))

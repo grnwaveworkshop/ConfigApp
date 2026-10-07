@@ -43,6 +43,18 @@ Orchestron 2.31.0+ adds, for the Events tab:
 <KE0,code>            3 file not allowed, 4 SD busy, 5 upload refused, 6 SD write failed
 ```
 
+Orchestron 2.34.0+ adds the loop profiler, for the Dashboard's "Loop profiler" table (polled once a
+second while it is open, every 3 s over BLE):
+
+```
+<KQ>                  -> <KQ,sections,on,auto,cpu,cpuMax,blocks,blocksMax,blocksTotal>
+<KQR> / <KQE1> / <KQE0> -> as <KQ>, after a reset / switching it on / off
+<KQ##>                -> <KQ##,name,calls,durMin,durAvg,durMax,periodMin,periodAvg,periodMax>  (us)
+```
+
+Firmware without it answers `<KQ>` with an error, and the panel stays hidden. The profiler is
+the shared `LoopProfiler` library, so RX-80B and T4-IMU get the same panel when they take it.
+
 Line numbers are 1-based file lines. The Events tab keys problems and fired notices to the
 line objects of the file the robot loaded, so they stay on the right row while you edit.
 
