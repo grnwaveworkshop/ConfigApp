@@ -103,9 +103,12 @@ def test_trigger_text_round_trip():
         assert Trigger.parse(text).text() == text, text
 
 
-def test_old_forms_read():
-    assert Trigger.parse("button2").text() == "pad.2"
-    assert Trigger.parse("ch8.high").text() == "ch8 high"
+def test_old_forms_refused():
+    # buttons.ini forms: Orchestron 2.33 refuses them, so the editor does too, saying what to write
+    _raises(lambda: Trigger.parse("button2"))
+    _raises(lambda: Trigger.parse("ch8.high"))
+    _raises(lambda: Rule.parse("pad.1", "random:2"))
+    _raises(lambda: Rule.parse("pad.1", "next:2"))
     assert Trigger.parse("pad.1.click").text() == "pad.1"
 
 
@@ -131,7 +134,7 @@ def test_rule_line_and_when():
 def test_actions():
     assert split_action("seq:wave") == ("seq", "wave")
     assert split_action("WAVA:12") == ("wavA", "12")
-    assert split_action("random:2") == ("randomA", "2")
+    assert split_action("randomA:2") == ("randomA", "2")
     assert split_action("home") == ("home", "")
     assert split_action("look") == ("seq", "look")      # buttons.ini form
     assert join_action("mode", "idle") == "mode:idle" and join_action("stop") == "stop"
@@ -223,7 +226,7 @@ def test_new_actions():
     assert describe_action("randomA:2001-2013") == "Random WAV numbered 2001-2013 (A)"
     assert describe_action("randomB:3") == "Random WAV from bank 3 (B)"
     assert describe_action("nextA:3") == "Next WAV in bank 3 (A)"
-    assert split_action("next:3") == ("nextA", "3")
+    assert split_action("nextA:3") == ("nextA", "3")
     assert describe_action("audio:music") == "Music on"
     assert Rule.parse("ch4 high", "set:audio.mix.master=50").is_state_rule()
 

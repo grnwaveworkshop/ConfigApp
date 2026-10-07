@@ -564,10 +564,12 @@ def _open_mod_editor(line_no: int | None) -> None:
 
 def _mod_ok() -> None:
     name = (dpg.get_value("me_name") or "").strip()
+    # As the firmware: refused only if it reads as a trigger (ch5, button3, pad, mode, link);
+    # "chin" or "modest" are fine (Orchestron 2.33)
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,15}", name) or \
-            re.match(r"(pad|button|ch|mode|link)", name, re.IGNORECASE):
-        dpg.set_value("me_err", "A name of letters/digits (up to 16), not starting with pad, ch, mode, "
-                      "link or button")
+            re.fullmatch(r"(ch|button|pad|mode|link)(\d.*)?", name, re.IGNORECASE):
+        dpg.set_value("me_err", "A name of letters/digits (up to 16) that doesn't read as a trigger "
+                      "(ch5, button3, pad, mode, link)")
         return
     with S.lock:
         S.doc.set_modifier(_edit_mod_line, name, _cond_get("me_c"))

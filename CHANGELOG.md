@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.2] - 2026-10-07
+
+### Changed (Orchestron 2.33.0)
+- **The events.ini editor takes only events.ini's own forms**, as the firmware now does:
+  `buttonN`, `chN.high`, `random:` and `next:` are errors that say what to write instead
+  (`pad.N`, `chN high`, `randomA:`, `nextA:`).
+- **Modifier names:** only names that read as a trigger are refused (`ch5`, `button3`, `pad`,
+  `mode`, `link`); "chin" or "modest" are fine, as on the robot.
+- Nothing else needed: the settings pages come from the firmware, so `fx.ring.waveform` 0-3 and
+  the retired `rec.switchCh` / `rec.switchMode` follow by themselves, and "audio:random plays
+  nothing" arrives in the Events tab's problem list.
+
 ## [0.9.1] - 2026-10-06
 
 ### Added (BallBot firmware 0.7.2+)

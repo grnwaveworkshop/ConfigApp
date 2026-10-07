@@ -180,8 +180,12 @@ class Condition:
 
     @staticmethod
     def parse(text: str) -> "Condition":
-        """'ch13 low', 'ch10 >1800', 'ch7 1200~80' (also the old 'ch13.low')."""
-        m = re.fullmatch(r"\s*ch(\d+)[\s.]+(\S+)\s*", text, re.IGNORECASE)
+        """'ch13 low', 'ch10 >1800', 'ch7 1200~80'."""
+        if re.fullmatch(r"\s*ch\d+\.\S+\s*", text, re.IGNORECASE):
+            fixed = re.sub(r"\.", " ", text.strip(), count=1)
+            raise EventsError(f"write '{fixed}', not '{text.strip()}' (the buttons.ini form; "
+                              "Orchestron 2.33 refuses it)")
+        m = re.fullmatch(r"\s*ch(\d+)\s+(\S+)\s*", text, re.IGNORECASE)
         if not m:
             raise EventsError(f"expected chN and a condition: '{text.strip()}'")
         ch = _int(m.group(1), 1, MAX_CHANNEL, "channel")
@@ -258,10 +262,14 @@ class Trigger:
             exit_ = low.endswith(".exit")
             body = k[:-5] if exit_ else k
             return Trigger("channel", cond=Condition.parse(body), exit=exit_)
-        # [mod+[mod+]]pad.N[.gesture], or the old buttonN[.gesture]
+        # [mod+[mod+]]pad.N[.gesture]
         parts = [p.strip() for p in k.split("+")]
         mods, last = parts[:-1], parts[-1]
-        m = re.fullmatch(r"(?:pad\.|button)(\d+)(?:\.(\w+))?", last, re.IGNORECASE)
+        old = re.fullmatch(r"button(\d+)(\.\w+)?", last, re.IGNORECASE)
+        if old:
+            raise EventsError(f"write 'pad.{old.group(1)}{old.group(2) or ''}', not '{last}' "
+                              "(the buttons.ini form; Orchestron 2.33 refuses it)")
+        m = re.fullmatch(r"pad\.(\d+)(?:\.(\w+))?", last, re.IGNORECASE)
         if not m:
             raise EventsError(f"unknown trigger: {k}")
         button = _int(m.group(1), 1, MAX_BUTTON, "pad button")
@@ -274,15 +282,11 @@ class Trigger:
 
 
 def split_action(text: str) -> tuple[str, str]:
-    """'seq:wave' -> ('seq', 'wave'); 'home' -> ('home', ''); a bare name is the old seq:NAME."""
+    """'seq:wave' -> ('seq', 'wave'); 'home' -> ('home', ''); a bare name is seq:NAME."""
     t = text.strip()
     if ":" in t:
         word, arg = t.split(":", 1)
         word = next((w for w in ACTION_ARG if w.lower() == word.strip().lower()), word.strip())
-        if word.lower() == "random":
-            word = "randomA"
-        if word.lower() == "next":
-            word = "nextA"
         return word, arg.strip()
     word = next((w for w in ACTION_ARG if w.lower() == t.lower()), None)
     if word is not None and ACTION_ARG[word] is None:
@@ -352,6 +356,10 @@ class Rule:
         actions = [a.strip() for a in body.split(",") if a.strip()]
         if len(actions) > MAX_ACTIONS:
             raise EventsError(f"at most {MAX_ACTIONS} actions per line")
+        for a in actions:
+            word = split_action(a)[0].lower()
+            if word in ("random", "next"):
+                raise EventsError(f"write '{word}A:' (or '{word}B:'), not '{word}:' (Orchestron 2.33 refuses it)")
         mods: list[str] = []
         modes: list[str] = []
         for item in (w.strip() for w in when.split("+") if w.strip()):
