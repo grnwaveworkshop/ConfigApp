@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.1] - 2026-10-06
+
+### Added (BallBot firmware 0.7.2+)
+- **T4-IMU Dashboard buttons:** the profile's default Controls are arm / disarm, E-stop, clear
+  E-stop, start / stop logging and capture balance offset, from the firmware's `<KA>` catalogue.
+
 ## [0.9.0] - 2026-10-06
 
 ### Added (Orchestron 2.32.0)

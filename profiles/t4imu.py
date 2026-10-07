@@ -54,6 +54,11 @@ TELEMETRY_MASK_IMPLEMENTED = 0xFF
 # emergency stop as a normal running mode, so MODE_NAMES is overridden here.
 MODE_NAMES: dict[int, str] = {0: "SAFE", 1: "LOOP-ON", 2: "ARMED", 3: "E-STOP", 4: "TILT"}
 
+# Dashboard Controls panel (app 0.7.0): action commands shown as buttons when the firmware lists
+# actions (<KA>, BallBot firmware v0.7.2+, src/Actions.cpp). Only the default - pins/unpins are
+# saved per robot on the PC.
+DASHBOARD_CONTROLS: list[str] = ["arm:toggle", "estop", "estop:clear", "log:toggle", "cal:capture"]
+
 # ---------------------------------------------------------------------------
 # Optional richer Dashboard (see profiles/__init__.py). Without this a profile
 # gets the generic flat "key: value" grid; with it, fields are grouped into
