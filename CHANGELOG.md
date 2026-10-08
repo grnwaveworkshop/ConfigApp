@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-10-08
+
+### Changed (BallBot firmware 0.7.10)
+- **BallBot's default Dashboard buttons include `policy:toggle`**: classic or the learned policy
+  drives, the same as a short press on the transmitter's Ch4. Its Actions tab also lists
+  `policy:on` / `policy:off` (from the firmware's catalogue). A Dashboard you already customised
+  keeps your buttons; right-click an action to pin it.
+
 ## [0.11.0] - 2026-10-08
 
 ### Added (BallBot firmware 0.7.9)

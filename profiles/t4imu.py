@@ -57,7 +57,8 @@ MODE_NAMES: dict[int, str] = {0: "SAFE", 1: "LOOP-ON", 2: "ARMED", 3: "E-STOP", 
 # Dashboard Controls panel (app 0.7.0): action commands shown as buttons when the firmware lists
 # actions (<KA>, BallBot firmware v0.7.2+, src/Actions.cpp). Only the default - pins/unpins are
 # saved per robot on the PC.
-DASHBOARD_CONTROLS: list[str] = ["arm:toggle", "estop", "estop:clear", "log:toggle", "cal:capture"]
+DASHBOARD_CONTROLS: list[str] = ["arm:toggle", "estop", "estop:clear", "log:toggle", "cal:capture",
+                                   "policy:toggle"]   # classic / the learned policy (firmware 0.7.10)
 
 # ---------------------------------------------------------------------------
 # Optional richer Dashboard (see profiles/__init__.py). Without this a profile
