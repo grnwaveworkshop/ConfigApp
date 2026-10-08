@@ -28,6 +28,26 @@ module, transparent UART bridge), category letter
 <KR##>        -> <KR##,mask> then <KT,...>  stream at ## Hz (0=stop)
 ```
 
+BallBot 0.7.9+ adds text keys: settings whose value is a name, not a number (`ctrl.policy.file`,
+the learned policy to load from the SD card). Their ids are their own, not `<KN##>` ids:
+
+```
+<KX>                  -> <KX,count>                               number of text keys
+<KX##>                -> <KX##,key,value,choices,status,description>  the robot rescans the choices
+<KXO##,i>             -> <KXO##,i,choice>                         choice i (e.g. a policy file)
+<KXS##,value>         -> <KXS##,1|0,value,status>                 set (RAM; <KW> saves it); 0 = stored,
+                                                                  not applied yet - the status says why
+<KE##,2>              the value is not letters, digits, - _ . (at most 31)
+```
+
+A text key sits on the page and tab its dotted name gives, after that tab's numbers (where the
+robot writes it in `config.ini`): a dropdown of its choices, or a text field when it has none.
+Firmware without `<KX>` answers with an error frame and shows no text keys.
+
+**Reboot.** A firmware whose `<KA>` catalogue has a `reboot` action gets the top bar's Reboot
+button: `<KA,reboot>`, then the app drops the link, waits for the robot (USB: until its port is
+back), and connects again.
+
 Orchestron 2.31.0+ adds, for the Events tab:
 
 ```
@@ -70,14 +90,14 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `transport.py` | `SerialTransport` (pyserial) and `BleTransport` (bleak, HM-10) behind a `Transport` ABC |
 | `protocol.py` | Request/reply correlation + telemetry routing on top of a transport |
 | `client.py` | `RobotClient` - high-level get/set/save/reload/stream API |
-| `models.py` | `ParamInfo`, `TelemetryFrame` - reads scale/telemetry layout from `profiles.active` |
+| `models.py` | `ParamInfo`, `TextInfo`, `TelemetryFrame` - reads scale/telemetry layout from `profiles.active` |
 | `pages.py` | Turns the flat param list into nav pages, purely from key-prefix structure |
 | `profiles/` | Per-robot telemetry layout + scale table + signature keys + optional Dashboard spec (see below) |
 | `app.py` | Dear PyGui desktop UI |
 | `cli.py` | Headless REPL for scripting/smoke tests |
 | `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O): rules, modifiers, presets, activities |
 | `events_page.py` | The Events tab: rule / modifier / activity editors, Learn, live inputs, fired markers, move up/down, robot load/save |
-| `tests/` | `py -m unittest discover tests`: the events.ini model, file commands against a simulated robot |
+| `tests/` | `py -m unittest discover tests`: the events.ini model, file commands and text keys against simulated robots |
 
 ## Config paging is fully generic
 

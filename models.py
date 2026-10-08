@@ -52,6 +52,23 @@ class ParamInfo:
 
 
 @dataclass
+class TextInfo:
+    """A text key (<KX##>, BallBot 0.7.9+): a name, not a number, e.g. ctrl.policy.file. `choices`
+    are the values the firmware offers (the app shows a dropdown); empty = free text. `status` is
+    what the firmware did with the value (loaded, waiting for the disarm, refused and why)."""
+    id: int
+    key: str
+    value: str
+    status: str = ""
+    description: str = ""
+    choices: list[str] = field(default_factory=list)
+
+    @property
+    def group(self) -> str:
+        return self.key.split(".")[0]
+
+
+@dataclass
 class TelemetryFrame:
     raw: dict[str, float] = field(default_factory=dict)
 

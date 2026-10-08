@@ -41,7 +41,7 @@ import events_page                                                      # noqa: 
 import pages as pages_mod                                                # noqa: E402
 import profiles                                                          # noqa: E402
 from client import RobotClient                                           # noqa: E402
-from models import TelemetryFrame, scale_for_key                         # noqa: E402
+from models import TelemetryFrame, TextInfo, scale_for_key               # noqa: E402
 from protocol import ProtocolError                                       # noqa: E402
 from transport import (HM10_DEFAULT_NAME, BleTransport,                   # noqa: E402
                        SerialTransport, TransportError)
@@ -53,6 +53,7 @@ PROF_POLL_BLE_S = 3.0    # 16 replies a sweep: keep a 9600-baud BLE link free fo
 PROF_SLOW_US = 1000      # a section whose longest run is this long is shown in amber
 DEFAULT_STREAM_HZ = 10
 PLOT_POINTS = 400        # rolling history per series (~20 s at 20 Hz)
+REBOOT_WAIT_S = 20.0     # how long a reboot's reconnect keeps trying (USB comes back in ~2-5 s)
 
 
 class AppState:
@@ -65,6 +66,7 @@ class AppState:
         self.fw = 0
         self.profile_name = ""
         self.params: list = []                 # list[ParamInfo] in id order
+        self.texts: list[TextInfo] = []        # text keys (<KX>, BallBot 0.7.9+), shown on their pages
         self.params_ready = False              # render loop should (re)build nav
         self.nav_built = False
         self.groups_ready = False              # render loop should (re)build telemetry checkboxes
@@ -251,6 +253,7 @@ def _force_disconnect(status: str) -> None:
     with state.lock:
         state.connected = False
         state.params = []
+        state.texts = []
         state.nav_built = False
         state.telemetry = None
         state.profile_name = ""
@@ -411,69 +414,77 @@ def _fetch_description_step() -> None:
 
 
 def job_connect(transport) -> None:
-    def run() -> None:
-        global bot
-        set_status(f"Connecting {transport.describe()} ...")
-        b = RobotClient(transport)
-        # Report a link that dies on its own (cable pulled, BLE dropped). The
-        # callback fires on a background thread, so hand the teardown to the io
-        # worker rather than doing it there - closing a transport from inside
-        # its own reader thread would try to join itself.
-        transport.set_on_lost(
-            lambda reason: io_q.put(lambda: _force_disconnect(f"Connection lost - {reason}")))
-        b.open()
+    io_q.put(lambda: _connect(transport))
+
+
+def _connect(transport) -> None:
+    """Open the link and learn the robot (io worker). Raises if it does not answer."""
+    global bot
+    set_status(f"Connecting {transport.describe()} ...")
+    b = RobotClient(transport)
+    # Report a link that dies on its own (cable pulled, BLE dropped). The
+    # callback fires on a background thread, so hand the teardown to the io
+    # worker rather than doing it there - closing a transport from inside
+    # its own reader thread would try to join itself.
+    transport.set_on_lost(
+        lambda reason: io_q.put(lambda: _force_disconnect(f"Connection lost - {reason}")))
+    b.open()
+    try:
+        fw = b.ping()
+        set_status(f"Loading {b.count()} params ...")
+        b.set_telemetry_handler(on_telemetry)
+        params = b.refresh_params()  # also auto-detects profiles.active
+        mtp = b.mtp_status()
         try:
-            fw = b.ping()
-            set_status(f"Loading {b.count()} params ...")
-            b.set_telemetry_handler(on_telemetry)
-            params = b.refresh_params()  # also auto-detects profiles.active
-            mtp = b.mtp_status()
-            try:
-                acts = b.actions()       # [] on firmware without <KA>
-            except ProtocolError:
-                acts = []
-            try:
-                prof = b.profiler()      # None on firmware without <KQ>
-            except ProtocolError:
-                prof = None
-        except Exception:
-            # Never leave an opened-but-unusable transport behind: it holds the
-            # COM port and blocks the next connect attempt.
-            try:
-                b.close()
-            except Exception:  # noqa: BLE001
-                pass
-            raise
-        bot = b
-        with state.lock:
-            state.connected = True
-            state.fw = fw
-            state.profile_name = profiles.active.NAME
-            state.params = sorted(params.values(), key=lambda p: p.id)
-            state.params_ready = True
-            state.nav_built = False
-            state.groups_ready = True
-            state.mtp_active = mtp
-            state.actions = acts
-            state.actions_ready = True
-            state.rec_state = None
-            state.rec_text = ""
-            state.prof = prof
-            state.prof_rows = []
-            state.prof_ready = True
-            state.controls_file = _controls_file(profiles.active.NAME)
-            state.controls = _load_controls(state.controls_file)
-            state.controls_ready = True
-            state.desc_cache_file = _desc_cache_file(profiles.active.NAME, fw)
-            state.desc = _load_desc_cache(state.desc_cache_file)
-            state.desc_supported = True if state.desc else None
-            state.desc_pending.clear()
-            state.desc_fetching = False
-            state.desc_new = set()
-        events_page.on_connect(b, fw, profiles.active.NAME)
-        set_status(f"Connected - {profiles.active.NAME}, fw {fw // 10000}.{(fw // 100) % 100}.{fw % 100}, "
-                   f"{len(params)} params")
-    io_q.put(run)
+            acts = b.actions()       # [] on firmware without <KA>
+        except ProtocolError:
+            acts = []
+        try:
+            texts = b.texts()        # [] on firmware without <KX>
+        except ProtocolError:
+            texts = []
+        try:
+            prof = b.profiler()      # None on firmware without <KQ>
+        except ProtocolError:
+            prof = None
+    except Exception:
+        # Never leave an opened-but-unusable transport behind: it holds the
+        # COM port and blocks the next connect attempt.
+        try:
+            b.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    bot = b
+    with state.lock:
+        state.connected = True
+        state.fw = fw
+        state.profile_name = profiles.active.NAME
+        state.params = sorted(params.values(), key=lambda p: p.id)
+        state.texts = texts
+        state.params_ready = True
+        state.nav_built = False
+        state.groups_ready = True
+        state.mtp_active = mtp
+        state.actions = acts
+        state.actions_ready = True
+        state.rec_state = None
+        state.rec_text = ""
+        state.prof = prof
+        state.prof_rows = []
+        state.prof_ready = True
+        state.controls_file = _controls_file(profiles.active.NAME)
+        state.controls = _load_controls(state.controls_file)
+        state.controls_ready = True
+        state.desc_cache_file = _desc_cache_file(profiles.active.NAME, fw)
+        state.desc = _load_desc_cache(state.desc_cache_file)
+        state.desc_supported = True if state.desc else None
+        state.desc_pending.clear()
+        state.desc_fetching = False
+        state.desc_new = set()
+    events_page.on_connect(b, fw, profiles.active.NAME)
+    set_status(f"Connected - {profiles.active.NAME}, fw {fw // 10000}.{(fw // 100) % 100}.{fw % 100}, "
+               f"{len(params)} params")
 
 
 def job_disconnect() -> None:
@@ -494,6 +505,80 @@ def job_set(key: str, val: int) -> None:
     io_q.put(run)
 
 
+def job_set_text(text_id: int, value: str) -> None:
+    """A text key from its dropdown (<KXS>): the robot applies it at once if it can (a policy file
+    loads while disarmed) and says what it did."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            applied, got, status = bot.set_text(text_id, value)
+        except ProtocolError as e:
+            set_confirm(f"\u2717 REJECTED {value}: {e}")
+            return
+        _update_text(text_id, value=got, status=status)
+        set_confirm(("\u2713 " if applied else "\u2717 ") + f"{got}: {status}")
+        with state.lock:
+            state.unsaved = True
+    io_q.put(run)
+
+
+def job_refresh_text(text_id: int) -> None:
+    """Ask the robot again for a text key's choices (e.g. after copying files to its SD card)."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            info = bot.text(text_id)
+        except ProtocolError as e:
+            set_status(f"Text key {text_id}: {e}")
+            return
+        _update_text(text_id, info=info)
+        set_status(f"{info.key}: {len(info.choices)} choices")
+    io_q.put(run)
+
+
+def _update_text(text_id: int, info: TextInfo | None = None, **fields) -> None:
+    with state.lock:
+        for i, t in enumerate(state.texts):
+            if t.id == text_id:
+                state.texts[i] = info if info is not None else TextInfo(**{**t.__dict__, **fields})
+        state.page_dirty = True
+
+
+def job_reboot() -> None:
+    """The robot's reboot action, then reconnect. USB: the port vanishes and comes back once the
+    robot has restarted; BLE: the module stays powered, the link is opened again."""
+    def run() -> None:
+        if not link_is_up():
+            return
+        try:
+            ok, msg = bot.run_action("reboot")
+        except ProtocolError as e:
+            set_confirm(f"\u2717 reboot: {e}")
+            return
+        set_confirm(("\u2713 " if ok else "\u2717 ") + f"reboot: {msg}")
+        if not ok:
+            return
+        t = bot.t
+        _force_disconnect("Rebooting ...")
+        again = (lambda: SerialTransport(t.port, t.baud)) if isinstance(t, SerialTransport) \
+            else (lambda: BleTransport(name=t.name, address=t.address))
+        time.sleep(2.0)                       # its reply goes out, then it resets 200 ms later
+        deadline = time.time() + REBOOT_WAIT_S
+        while io_running and time.time() < deadline:
+            if isinstance(t, SerialTransport) and t.port not in {d for d, _ in SerialTransport.list_ports()}:
+                time.sleep(0.5)
+                continue
+            try:
+                _connect(again())
+                return
+            except Exception:  # noqa: BLE001 - still starting; try again
+                time.sleep(1.5)
+        set_status(f"Rebooted; no answer from {t.describe()} after {REBOOT_WAIT_S:.0f} s - press Connect")
+    io_q.put(run)
+
+
 def job_save() -> None:
     def run() -> None:
         if not link_is_up():
@@ -511,8 +596,13 @@ def job_reload() -> None:
         if not link_is_up():
             return
         params = bot.reload()
+        try:
+            texts = bot.texts()
+        except ProtocolError:
+            texts = []
         with state.lock:
             state.params = sorted(params.values(), key=lambda p: p.id)
+            state.texts = texts
             state.params_ready = True
             state.nav_built = False
             state.unsaved = False
@@ -732,8 +822,52 @@ def _tip_text(info) -> str:
     return (f"{d}\n\n" if d else "") + f"{info.key}\nid {info.id}   range {info.vmin}..{info.vmax}"
 
 
+def on_text_change(sender, app_data, user_data) -> None:
+    """A text key's dropdown or field changed: send it now (no debounce, it is one pick)."""
+    value = str(app_data).strip()
+    set_confirm(f"\u2026 sending {value}")
+    job_set_text(int(user_data), value)
+
+
+def _text_row(info: TextInfo, label: str) -> None:
+    """One text key: a dropdown of the robot's choices (or a field), a rescan button, its status."""
+    with dpg.table_row():
+        dpg.add_text(label)
+        with dpg.tooltip(dpg.last_item()):
+            dpg.add_text((f"{info.description}\n\n" if info.description else "") + f"{info.key}\ntext key {info.id}",
+                         wrap=420)
+        if info.choices:
+            items = info.choices + ([info.value] if info.value not in info.choices else [])
+            dpg.add_combo(items, default_value=info.value, width=-1, callback=on_text_change, user_data=info.id)
+        else:
+            dpg.add_input_text(default_value=info.value, width=-1, on_enter=True, callback=on_text_change,
+                               user_data=info.id)
+        dpg.add_button(label="Rescan", width=-1, user_data=info.id, callback=lambda s, a, u: job_refresh_text(u))
+        with dpg.tooltip(dpg.last_item()):
+            dpg.add_text("Ask the robot again for the choices (after copying files to its SD card)")
+        dpg.add_text("")
+    if info.status:
+        with dpg.table_row():
+            dpg.add_text("")
+            dpg.add_text(info.status, wrap=SLIDER_W - 8, color=(160, 200, 160))
+
+
+def _with_texts(params: list) -> list:
+    """The page's params with the text keys that belong on it, each after the last param of its
+    "page.tab" (where the firmware saves it in config.ini), or at the end."""
+    out = list(params)
+    pages = {p.group for p in params}
+    for t in state.texts:
+        if t.group not in pages:
+            continue
+        sec = ".".join(t.key.split(".")[:2])
+        at = max((i + 1 for i, p in enumerate(out) if ".".join(p.key.split(".")[:2]) == sec), default=len(out))
+        out.insert(at, t)
+    return out
+
+
 def _param_rows(params: list, parent: str, label_of=None) -> None:
-    """The standard label / slider / input / scaled-value table."""
+    """The standard label / slider / input / scaled-value table (text keys: a dropdown row)."""
     with dpg.table(parent=parent, header_row=False, policy=dpg.mvTable_SizingFixedFit,
                    row_background=True, borders_innerH=False, borders_outerH=False,
                    borders_innerV=False, borders_outerV=False):
@@ -742,6 +876,9 @@ def _param_rows(params: list, parent: str, label_of=None) -> None:
         dpg.add_table_column(init_width_or_weight=INPUT_W, width_fixed=True)
         dpg.add_table_column(init_width_or_weight=SCALED_W, width_fixed=True)
         for info in params:
+            if isinstance(info, TextInfo):
+                _text_row(info, label_of(info) if label_of else info.key)
+                continue
             with dpg.table_row():
                 label = label_of(info) if label_of else info.key
                 dpg.add_text(label)
@@ -798,7 +935,7 @@ def build_page() -> None:
         return
 
     if state.search:
-        hits = [p for p in state.params if state.search in p.key.lower()]
+        hits = [p for p in state.params + state.texts if state.search in p.key.lower()]
         dpg.add_text(f'Search "{state.search}" - {len(hits)} of {len(state.params)}',
                      parent="page_group", color=(150, 200, 255))
         dpg.add_separator(parent="page_group")
@@ -807,13 +944,13 @@ def build_page() -> None:
             if len(hits) > 200:
                 dpg.add_text(f"... {len(hits) - 200} more, narrow the search",
                              parent="page_group", color=(200, 160, 100))
-            job_fetch_descriptions([p.key for p in hits[:200]])
+            job_fetch_descriptions([p.key for p in hits[:200] if not isinstance(p, TextInfo)])
         else:
             dpg.add_text("No matching keys.", parent="page_group")
         return
 
     grouped = pages_mod.group_params(state.params)
-    params = grouped.get(state.current_page, [])
+    params = _with_texts(grouped.get(state.current_page, []))
 
     dpg.add_text(f"{state.current_page}  -  {len(params)} parameters",
                  parent="page_group", color=(150, 200, 255))
@@ -823,7 +960,7 @@ def build_page() -> None:
         _build_subgrouped_page(params, "page_group")
     else:
         _param_rows(params, "page_group")
-    job_fetch_descriptions([p.key for p in params])
+    job_fetch_descriptions([p.key for p in params if not isinstance(p, TextInfo)])
 
 
 def build_telemetry_groups() -> None:
@@ -1094,6 +1231,11 @@ def build_layout() -> None:
             dpg.add_button(label="Connect", tag="btn_connect", callback=on_connect)
             dpg.add_button(label="Enter MTP Mode", tag="btn_mtp", callback=lambda: job_mtp_toggle(),
                           enabled=False)
+            # Shown when the firmware lists a "reboot" action (BallBot 0.7.2+)
+            dpg.add_button(label="Reboot", tag="btn_reboot", show=False,
+                           callback=lambda: dpg.configure_item("reboot_modal", show=True))
+            with dpg.tooltip("btn_reboot"):
+                dpg.add_text("Restart the robot's board (it refuses while armed), then reconnect")
             # Shown when the firmware lists rec:toggle (Orchestron 2.27.2+)
             dpg.add_button(label="Record", tag="btn_rec", width=120, show=False,
                            callback=lambda: job_action("rec:toggle"))
@@ -1172,6 +1314,16 @@ def build_layout() -> None:
             with dpg.tab(label="Events"):
                 events_page.build()
 
+    # Reboot confirmation (the top bar's Reboot button), a window of its own
+    with dpg.window(label="Reboot the robot?", tag="reboot_modal", modal=True, show=False,
+                    no_resize=True, width=360):
+        dpg.add_text("Restarts the board. Unsaved settings are lost; the app reconnects.", wrap=330)
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Reboot", width=100, callback=lambda: (
+                dpg.configure_item("reboot_modal", show=False), job_reboot()))
+            dpg.add_button(label="Cancel", width=100,
+                           callback=lambda: dpg.configure_item("reboot_modal", show=False))
+
 
 def main() -> int:
     global io_running
@@ -1208,6 +1360,7 @@ def main() -> int:
             state.prof_ready = False
             has_prof = state.prof is not None
             can_record = any(cmd == "rec:toggle" for _g, _l, cmd in state.actions)
+            can_reboot = any(cmd == "reboot" for _g, _l, cmd in state.actions)
             rec_state = state.rec_state
             rec_text = state.rec_text
             ble_devs = state.ble_devices if state.ble_ready else None
@@ -1222,6 +1375,7 @@ def main() -> int:
         dpg.configure_item("btn_connect", label="Disconnect" if connected else "Connect")
         dpg.configure_item("btn_mtp", enabled=connected,
                            label="Exit MTP Mode" if mtp_active else "Enter MTP Mode")
+        dpg.configure_item("btn_reboot", show=connected and can_reboot)
         dpg.configure_item("btn_rec", show=connected and can_record,
                            enabled=rec_state != 2,      # writing the CSV: wait
                            label="Stop recording" if rec_state == 1 else "Record")

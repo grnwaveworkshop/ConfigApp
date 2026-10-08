@@ -23,6 +23,8 @@ Commands:
     mtp [on|off]              query, or enter/exit, MTP/mass-storage mode
     actions                   <KA> the firmware's action list (Orchestron 2.27.2+)
     action <command>          <KA,command> run one, e.g. action rec:toggle / seq:wave
+    texts                     <KX> the text keys, their values, choices and status (BallBot 0.7.9+)
+    settext <key|id> <value>  <KXS> set one, e.g. settext ctrl.policy.file velp10
     q                         quit
 """
 from __future__ import annotations
@@ -179,6 +181,23 @@ def main() -> int:
             elif cmd == "action":
                 ok, msg = bot.run_action(line.split(None, 1)[1])
                 print(("ok: " if ok else "FAILED: ") + msg)
+            elif cmd == "texts":
+                texts = bot.texts()
+                if not texts:
+                    print("  (no text keys - firmware without <KX>)")
+                for t in texts:
+                    print(f"  {t.id:3d} {t.key:24s} = {t.value:16s} {t.status}")
+                    if t.choices:
+                        print(f"      choices: {', '.join(t.choices)}")
+            elif cmd == "settext":
+                _c, which, value = line.split(None, 2)
+                ids = {t.key: t.id for t in bot.texts()}
+                tid = int(which) if which.isdigit() else ids.get(which)
+                if tid is None:
+                    print(f"! no text key {which!r}")
+                else:
+                    applied, got, status = bot.set_text(tid, value)
+                    print(("applied: " if applied else "stored, not applied: ") + f"{got}  ({status})")
             else:
                 print("?")
         except (ProtocolError, IndexError, ValueError) as e:

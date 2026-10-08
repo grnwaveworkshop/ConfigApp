@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 import models
 import profiles
-from models import ParamInfo, ProfilerStatus, ProfileSection, TelemetryFrame
+from models import ParamInfo, ProfilerStatus, ProfileSection, TelemetryFrame, TextInfo
 from protocol import CATEGORY, Protocol, ProtocolError, split_frame
 from transport import Transport
 
@@ -173,6 +173,43 @@ class RobotClient:
         if tag != CATEGORY + "A" or not args:
             raise ProtocolError(f"action not supported by this firmware: {tag},{args}")
         return args[0] == "1", ",".join(args[1:]).strip()
+
+    # -- text keys (BallBot 0.7.9+) ------------------------------------------- #
+    def texts(self) -> list[TextInfo]:
+        """<KX> + text(id) for each: every text key with its choices. [] on firmware without them
+        (it answers <KX> with an error frame)."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}X"))
+        if tag != CATEGORY + "X" or not args:
+            return []
+        return [self.text(i) for i in range(int(args[0]))]
+
+    def text(self, text_id: int) -> TextInfo:
+        """<KX##> (the robot rescans the key's choices, e.g. the policy files on its SD card), then
+        <KXO##,i> for each choice."""
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}X{text_id}"))
+        if tag != f"{CATEGORY}X{text_id}" or len(args) < 4:
+            raise ProtocolError(f"bad <KX{text_id}> reply: {tag},{args}")
+        # KX##,key,value,choices,status,description - the description may itself contain commas
+        info = TextInfo(text_id, args[0], args[1], status=args[3], description=",".join(args[4:]).strip())
+        for i in range(int(args[2])):
+            t, a = split_frame(self.proto.request(f"{CATEGORY}XO{text_id},{i}"))
+            if t == f"{CATEGORY}XO{text_id}" and len(a) >= 2:
+                info.choices.append(a[1])
+        return info
+
+    def set_text(self, text_id: int, value: str) -> tuple[bool, str, str]:
+        """<KXS##,value> - set a text key (live, RAM only; save() writes it). Returns (applied,
+        value, status): applied is False when the robot stored it but could not apply it yet, e.g.
+        a policy that loads at the disarm or a file it refused; the status says which."""
+        value = value.strip()
+        if any(c in value for c in "<>,"):
+            raise ProtocolError("a text value can't contain < > or ,")
+        tag, args = split_frame(self.proto.request(f"{CATEGORY}XS{text_id},{value}", timeout=3.0))
+        if tag.startswith(_ERR):
+            raise ProtocolError(f"{value!r} refused (letters, digits, - _ . only, at most 31)")
+        if tag != f"{CATEGORY}XS{text_id}" or len(args) < 2:
+            raise ProtocolError(f"bad <KXS{text_id}> reply: {tag},{args}")
+        return args[0] == "1", args[1], ",".join(args[2:]).strip()
 
     # -- events.ini editor (Orchestron 2.31.0+) ------------------------------- #
     def _file_request(self, body: str, timeout: float = 1.5) -> list[str]:

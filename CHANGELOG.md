@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-10-08
+
+### Added (BallBot firmware 0.7.9)
+- **Text keys, with dropdowns.** Settings whose value is a name (`<KX>`): each shows on its page
+  and tab as a dropdown of the robot's choices (a text field when it offers none), with what the
+  robot did beside it. **Rescan** asks the robot again. BallBot's `ctrl.policy.file` lists `builtin`
+  and the learned policies in its SD card's `/policies` folder; a pick loads the file while the
+  robot is disarmed (armed: it loads at the disarm) and says so. **Save to SD** keeps it.
+  Firmware without `<KX>` shows none. CLI: `texts`, `settext <key> <value>`.
+- **Reboot button** in the top bar, for firmware whose action list has `reboot` (BallBot): asks
+  first, restarts the board (the robot refuses while armed), then reconnects by itself, over USB
+  (once the port is back) or BLE.
+
+### Tests
+- `tests/test_client_texts.py`: the text-key commands against a pretend BallBot (choices, rescan,
+  load or wait, a missing file, refused values, firmware without them).
+
 ## [0.10.0] - 2026-10-07
 
 ### Added (Orchestron 2.34.0)
