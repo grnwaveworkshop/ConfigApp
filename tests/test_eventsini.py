@@ -1,6 +1,7 @@
 """eventsini.py: the events.ini model. Run: py -m unittest discover tests"""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -8,11 +9,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import unittest  # noqa: E402
 
-from eventsini import (NEW_FILE, Condition, EventsDoc, EventsError, Rule, Trigger,  # noqa: E402
-                       button_width_us, buttons_down, check_action, cycle_items, describe_action,
-                       flat_actions, format_cycle, format_pick, format_when, join_action,
-                       learn_channel, name_error, parse_pick, parse_when, split_action, split_actions,
-                       suggest_condition, when_words)
+from eventsini import (GESTURES, NEW_FILE, Condition, EventsDoc, EventsError, Rule,  # noqa: E402
+                       Trigger, button_width_us, buttons_down, check_action, check_set, cycle_items,
+                       describe_action, flat_actions, format_cycle, format_pick, format_when,
+                       is_relative_set, join_action, join_set, learn_channel, name_error, parse_pick,
+                       parse_when, split_action, split_actions, split_set, suggest_condition,
+                       when_words)
 
 # The firmware's example (Orchestron docs/examples/events.ini), shortened
 EXAMPLE = """; events.ini - example
@@ -275,14 +277,29 @@ def test_edits_keep_end_of_line_comments():
     assert doc.presets() == {"deep": [("fx.pitch.amount", "80")]}
 
 
+ORCHESTRON = Path(__file__).resolve().parents[3] / "Teensy4VocalizerV3" / "Software" / "Orchestron"
+
+
+def _firmware_settings() -> dict[str, tuple[int, int]] | None:
+    """{key: (min, max)} from Orchestron's src/ConfigParams.def (as the robot's <KN> table
+    gives them), None when the repo isn't next to this one."""
+    f = ORCHESTRON / "src" / "ConfigParams.def"
+    if not f.exists():
+        return None
+    rows = re.findall(r'^PARAM\(\s*\w+\s*,\s*"([^"]+)"\s*,\s*\w+\s*,\s*[^,]+,\s*(-?\d+)\s*,\s*(-?\d+)\s*,',
+                      f.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
+    return {key: (int(lo), int(hi)) for key, lo, hi in rows} or None
+
+
 def test_shipped_files():
     """Every events.ini Orchestron ships (docs/examples, the SD card folders) reads cleanly
-    and round-trips byte for byte."""
-    orch = Path(__file__).resolve().parents[3] / "Teensy4VocalizerV3" / "Software" / "Orchestron"
+    and round-trips byte for byte; its set: lines name real settings, within range."""
+    orch = ORCHESTRON
     files = [orch / "docs" / "examples" / "events.ini"] + sorted(orch.glob("SDCard*/events.ini"))
     files = [f for f in files if f.exists()]
     if not files:
         return  # not next to the Orchestron repo
+    settings = _firmware_settings()
     for f in files:
         text = f.read_bytes().decode("utf-8")
         doc = EventsDoc(text)
@@ -291,6 +308,7 @@ def test_shipped_files():
         assert not bad, (f, bad)
         named = [(name, err) for _n, name, _c, err in doc.buttons() + doc.modifiers() if err]
         assert not named and not doc.pad_problem() and not doc.rule_problems(), (f, named, doc.rule_problems())
+        assert not doc.rule_problems(settings), (f, doc.rule_problems(settings))
         for name, act in doc.activities().items():
             assert act.kind, (f, name)
 
@@ -635,6 +653,136 @@ def test_sparky_audio_buttons():
         doc.set_rule(n, l.rule)                           # rewrite every rule from its model
     assert [l.rule for _n, l in EventsDoc(doc.text()).rules()] == rules
     assert "music            = toggleB:3, when=audio.manual|random" in doc.text()
+
+
+# Relative set: and the .repeat gesture (Orchestron 2.37.0): volume up / down buttons
+VOLUME = """[buttons]
+volup  = ch7 1900
+voldn  = ch7 1100
+[events]
+volup.repeat = set:audio.mix.wavB+=5
+voldn.repeat = set:audio.mix.wavB-=5
+pad.2        = set:audio.mix.master+=10, when=audio.music
+link.lost    = set:audio.mix.wavB=60
+"""
+RANGES = {"audio.mix.wavB": (0, 100), "audio.mix.master": (0, 100), "audio.mix.lineOut": (13, 31)}
+
+
+def test_volume_buttons_example():
+    doc = EventsDoc(VOLUME)
+    assert doc.text() == VOLUME.replace("\n", "\r\n")
+    rules = [l.rule for _n, l in doc.rules()]
+    assert all(rules) and not doc.rule_problems() and not doc.rule_problems(RANGES)
+    words = [(r.trigger.describe(), [describe_action(a) for a in r.actions], r.describe_when()) for r in rules]
+    assert words == [
+        ("volup button press, repeating while held",
+         ["Raise audio.mix.wavB by 5 (stops at its maximum)"], ""),
+        ("voldn button press, repeating while held",
+         ["Lower audio.mix.wavB by 5 (stops at its minimum)"], ""),
+        ("pad button 2 click", ["Raise audio.mix.master by 10 (stops at its maximum)"],
+         "when sound mode is music"),
+        ("RC link lost", ["Set audio.mix.wavB to 60"], ""),
+    ]
+    # Only set:KEY=VALUE is a state rule: a step applied again at power-up would move it again
+    assert [r.is_state_rule() for r in rules] == [False, False, False, True]
+    assert [(r.trigger.source, r.trigger.gesture) for r in rules[:3]] == \
+        [("named", "repeat"), ("named", "repeat"), ("pad", "click")]
+    for n, l in doc.rules():
+        doc.set_rule(n, l.rule)                           # rewrite every rule from its model
+    assert [l.rule for _n, l in EventsDoc(doc.text()).rules()] == rules
+    assert "volup.repeat     = set:audio.mix.wavB+=5\r\n" in doc.text()
+    assert "voldn.repeat     = set:audio.mix.wavB-=5\r\n" in doc.text()
+    assert "pad.2            = set:audio.mix.master+=10, when=audio.music\r\n" in doc.text()
+
+
+def test_relative_set():
+    assert split_set("audio.mix.wavB+=10") == ("audio.mix.wavB", "+=", "10")
+    assert split_set(" audio.mix.wavB -= 10 ") == ("audio.mix.wavB", "-=", "10")
+    assert split_set("fx.pitch.amount=120") == ("fx.pitch.amount", "=", "120")
+    assert split_set("fx.pitch.amount=-5") == ("fx.pitch.amount", "=", "-5")   # absolute, negative
+    assert split_set("audio.mix.wavB+=-5") == ("audio.mix.wavB", "+=", "-5")   # read; check_set refuses
+    assert split_set("audio.mix.wavB") is None
+    assert join_set(" audio.mix.wavB ", "+=", " 10") == "audio.mix.wavB+=10"
+    # spaces around the key and the operator: as written in the file, normalised by the editor
+    r = Rule.parse("pad.1", "set: audio.mix.wavB += 10")
+    assert split_action(r.actions[0]) == ("set", "audio.mix.wavB += 10")
+    assert describe_action(r.actions[0]) == "Raise audio.mix.wavB by 10 (stops at its maximum)"
+    assert join_action("set", join_set(*split_set("audio.mix.wavB += 10"))) == "set:audio.mix.wavB+=10"
+    assert is_relative_set("set:audio.mix.wavB-=1") and is_relative_set("SET: a += 2")
+    assert not is_relative_set("set:audio.mix.wavB=1") and not is_relative_set("seq:a+=1")
+    assert not Rule.parse("ch4 high", "set:audio.mix.wavB+=5").is_state_rule()
+    assert Rule.parse("ch4 high", "set:audio.mix.wavB+=5, set:audio.mix.master=50").is_state_rule()
+    assert Rule.parse("ch4 high", "set:audio.mix.wavB-=5, mode:idle").is_state_rule()
+    # anywhere an action goes: a cycle's items, an activity's play =
+    r = Rule.parse("pad.4", "cycle(set:audio.mix.wavB+=10, set:audio.mix.wavB-=10)")
+    assert describe_action(r.actions[0]) == ("Each time: the next of Raise audio.mix.wavB by 10 (stops at "
+                                             "its maximum), Lower audio.mix.wavB by 10 (stops at its minimum)")
+    assert not r.is_state_rule()
+    doc = EventsDoc("[activity.fade]\nplay = set:audio.mix.wavB-=1\nevery = 10s\n")
+    act = doc.activities()["fade"]
+    assert act.kind == "action" and act.sequence_names() == []
+    assert act.describe() == "Lower audio.mix.wavB by 1 (stops at its minimum), every 10s"
+    for good in ["set:audio.mix.wavB+=1", "set:audio.mix.wavB-=100", "set:k=-5", "set:k=+5", "set: k += 3"]:
+        check_action(good)
+
+
+def test_relative_set_errors():
+    # Refused whatever the robot's settings: a step of 0, not a whole number, a sign inside
+    for bad in ["set:audio.mix.wavB+=0", "set:audio.mix.wavB+=x", "set:audio.mix.wavB+=-5",
+                "set:audio.mix.wavB-=+5", "set:audio.mix.wavB+=", "set:audio.mix.wavB+=1.5",
+                "cycle(set:audio.mix.wavB+=0, stopA)", "set:+=5"]:
+        _raises(lambda: Rule.parse("pad.1", bad), bad)
+    assert _raises(lambda: check_action("set:audio.mix.wavB+=0")) == \
+        "set:audio.mix.wavB+=N steps by a whole number of 1 or more, not '0'"
+    assert _raises(lambda: check_action("set:audio.mix.wavB+=-5")) == \
+        "set:audio.mix.wavB+=N steps by a whole number of 1 or more, not '-5'"
+    # set:KEY=VALUE too: KEY=VALUE, a whole number (the firmware's words)
+    assert _raises(lambda: check_action("set:audio.mix.wavB")) == \
+        "set needs KEY=VALUE, KEY+=N or KEY-=N: audio.mix.wavB"
+    assert _raises(lambda: check_action("set:fx.pitch.amount=1.5")) == "fx.pitch.amount needs a whole number, not '1.5'"
+    # The setting and the range: only when the robot's table is known
+    for unknown_offline in ["set:audio.mix.wavB+=500", "set:nosuch+=1", "set:audio.mix.wavB=101"]:
+        check_action(unknown_offline)
+    assert _raises(lambda: check_set("audio.mix.wavB+=500", RANGES)) == \
+        "set:audio.mix.wavB+=N steps by 1-100 (audio.mix.wavB is 0-100), not 500"
+    assert _raises(lambda: check_set("audio.mix.lineOut-=19", RANGES)) == \
+        "set:audio.mix.lineOut-=N steps by 1-18 (audio.mix.lineOut is 13-31), not 19"
+    check_set("audio.mix.lineOut-=18", RANGES)                   # the whole range: fine
+    assert _raises(lambda: check_set("nosuch+=1", RANGES)) == "no setting called nosuch"
+    assert _raises(lambda: check_set("Audio.mix.wavB+=1", RANGES)) == "no setting called Audio.mix.wavB"
+    assert _raises(lambda: check_set("audio.mix.wavB=101", RANGES)) == "audio.mix.wavB must be 0-100"
+    check_set("audio.mix.wavB=100", RANGES)
+    # ... and the document says so per line, for rules and cycle items
+    doc = EventsDoc(VOLUME + "pad.3 = set:audio.mix.wavB+=500\npad.4 = set:nosuch+=1\n"
+                    "pad.5 = cycle(home, set:audio.mix.master-=101)\npad.6 = set:audio.mix.wavB=101\n")
+    assert not doc.rule_problems()
+    problems = {doc.lines[n - 1].key: p for n, p in doc.rule_problems(RANGES).items()}
+    assert problems == {
+        "pad.3": "set:audio.mix.wavB+=N steps by 1-100 (audio.mix.wavB is 0-100), not 500",
+        "pad.4": "no setting called nosuch",
+        "pad.5": "set:audio.mix.master-=N steps by 1-100 (audio.mix.master is 0-100), not 101",
+        "pad.6": "audio.mix.wavB must be 0-100",
+    }
+    # A bad line is the module's error, kept as written
+    doc = EventsDoc("[events]\npad.1 = set:audio.mix.wavB+=0\n")
+    assert doc.rules()[0][1].rule is None and "1 or more" in doc.rules()[0][1].error
+
+
+def test_repeat_gesture():
+    assert "repeat" in GESTURES
+    for text in ["volup.repeat", "pad.3.repeat", "bank2+volup.repeat", "shift+pad.14.repeat"]:
+        assert Trigger.parse(text).text() == text, text
+    t = Trigger.parse("Pad.3.REPEAT")
+    assert (t.source, t.button, t.gesture) == ("pad", 3, "repeat")
+    assert t.describe() == "pad button 3 press, repeating while held"
+    assert Trigger.parse("bank2+volup.repeat").describe() == "bank2 + volup button press, repeating while held"
+    for bad in ["pad.1.repeating", "volup.repeats", "pad.1.auto"]:
+        _raises(lambda: Trigger.parse(bad), bad)
+    assert _raises(lambda: Trigger.parse("pad.1.repeating")) == \
+        "gesture must be one of click, press, double, triple, long, release, repeat: pad.1.repeating"
+    # An undefined button is still the document's check
+    doc = EventsDoc("[events]\nvolup.repeat = set:audio.mix.wavB+=5\n")
+    assert list(doc.rule_problems().values()) == ["no [buttons] line named volup"]
 
 
 def load_tests(loader, tests, pattern):

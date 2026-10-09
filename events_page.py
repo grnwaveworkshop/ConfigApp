@@ -1,5 +1,6 @@
 """Events tab: edit the robot's events.ini without touching the text (Orchestron 2.31.0+;
-activities and the 2.32 actions with firmware 2.32.0+; named buttons and cycle() 2.36.0+).
+activities and the 2.32 actions with firmware 2.32.0+; named buttons and cycle() 2.36.0+;
+set: raise by / lower by and the repeat gesture 2.37.0+).
 
 What every transmitter control does is a rule in events.ini (see eventsini.py). This tab
 reads the file from the robot's SD card, shows each rule in plain words, edits them with
@@ -325,6 +326,92 @@ _SOURCE_KEYS = ["pad", "named", "channel", "link", "mode"]
 _BUTTONS = ("pad", "named")         # sources with gestures and modifier+ prefixes (banks)
 _ACTION_ITEMS = ["(none)"] + [label for _w, label, _a in ev.ACTIONS]
 _CHANNELS = [f"ch{c}" for c in range(1, ev.MAX_CHANNEL + 1)]
+# set:'s operation (raise by / lower by: Orchestron 2.37.0+)
+_SET_OPS = {"set to": "=", "raise by": "+=", "lower by": "-="}
+_SET_OP_LABELS = {op: label for label, op in _SET_OPS.items()}
+
+
+def _setting_ranges() -> dict[str, tuple[int, int]] | None:
+    """The connected Orchestron's settings, {key: (min, max)} as set: takes them; None when not
+    connected (then the robot checks set:'s setting and range when it loads the file)."""
+    bot = _bot()
+    params = getattr(bot, "params", None)
+    return {k: (p.vmin, p.vmax) for k, p in params.items()} if params else None
+
+
+# --------------------------------------------------------------------------- #
+# Action rows: an action dropdown and its value widgets (rule and activity editors)
+# --------------------------------------------------------------------------- #
+def _row(prefix: str, i: int | None = None) -> Callable[[str], str]:
+    """An action row's widget tags: _row("re", 0)("argt") -> "re_argt_0", _row("ae")("argt") -> "ae_argt"."""
+    return lambda name: f"{prefix}_{name}" + ("" if i is None else f"_{i}")
+
+
+def _arg_widgets(tag: Callable[[str], str], callback) -> None:
+    """The value widgets after a row's action dropdown: a dropdown or a text field, and for set:
+    the operation and the value (the text field then holds the setting)."""
+    dpg.add_combo([], tag=tag("argc"), width=300, show=False, callback=callback)
+    dpg.add_input_text(tag=tag("argt"), width=300, show=False, callback=callback)
+    dpg.add_combo(list(_SET_OPS), tag=tag("setop"), width=90, default_value="set to", show=False,
+                  callback=callback)
+    with dpg.tooltip(dpg.last_item()):
+        dpg.add_text("set to: KEY=VALUE (a state rule on a channel).\n"
+                     "raise by / lower by: KEY+=N / KEY-=N, a step of 1 or more that stops at the\n"
+                     "setting's max / min (Orchestron 2.37.0+). With a repeat gesture: hold to keep going.")
+    dpg.add_input_text(tag=tag("setv"), width=70, show=False, callback=callback)
+
+
+def _row_word(tag: Callable[[str], str]) -> str | None:
+    label = dpg.get_value(tag("act"))
+    return next((w for w, l, _a in ev.ACTIONS if l == label), None)
+
+
+def _action_get(tag: Callable[[str], str]) -> str | None:
+    """The action a row says ('seq:wave', 'set:audio.mix.wavB+=10'); None for (none)."""
+    word = _row_word(tag)
+    if word is None:
+        return None
+    kind = ev.ACTION_ARG[word]
+    arg = ""
+    if kind == "set":
+        arg = ev.join_set(dpg.get_value(tag("argt")) or "", _SET_OPS.get(dpg.get_value(tag("setop")), "="),
+                          dpg.get_value(tag("setv")) or "")
+    elif kind:
+        arg = (dpg.get_value(tag("argc")) if dpg.is_item_shown(tag("argc"))
+               else dpg.get_value(tag("argt"))) or ""
+        if kind == "wav":
+            arg = re.match(r"\s*(\d*)", arg).group(1)
+    return ev.join_action(word, arg)
+
+
+def _action_show(tag: Callable[[str], str]) -> None:
+    """Show the row's value widgets for its action."""
+    word = _row_word(tag)
+    kind = ev.ACTION_ARG.get(word) if word else None
+    choices = _arg_choices(kind)
+    setting = kind == "set"
+    dpg.configure_item(tag("argc"), show=bool(kind) and bool(choices), items=choices)
+    dpg.configure_item(tag("argt"), show=bool(kind) and not choices, hint=ev.ARG_HINTS.get(kind or "", ""),
+                       width=200 if setting else 300)
+    dpg.configure_item(tag("setop"), show=setting)
+    dpg.configure_item(tag("setv"), show=setting, hint="value" if dpg.get_value(tag("setop")) == "set to" else "step")
+    if choices and dpg.get_value(tag("argc")) not in choices:
+        dpg.set_value(tag("argc"), choices[0])
+
+
+def _action_put(tag: Callable[[str], str], action: str | None, unknown: str) -> None:
+    """Fill a row from one action (None: (none)); unknown: the action dropdown's item for a word
+    it doesn't offer."""
+    word, arg = ev.split_action(action) if action else ("", "")
+    kind = ev.ACTION_ARG.get(word)
+    dpg.set_value(tag("act"), ev.ACTION_LABEL.get(word, unknown))
+    choices = _arg_choices(kind)
+    match = next((c for c in choices if c == arg or c.split()[0] == arg), None) if arg else None
+    dpg.set_value(tag("argc"), match or (choices[0] if choices else ""))
+    key, op, value = (ev.split_set(arg) or (arg, "=", "")) if kind == "set" else (arg, "=", "")
+    dpg.set_value(tag("argt"), key)
+    dpg.set_value(tag("setop"), _SET_OP_LABELS[op])
+    dpg.set_value(tag("setv"), value)
 
 
 def _cond_set(prefix: str, cond: ev.Condition) -> None:
@@ -405,20 +492,7 @@ def _rule_from_editor() -> ev.Rule:
         t.link = dpg.get_value("re_link")
     else:
         t.mode = dpg.get_value("re_mode")
-    actions = []
-    for i in range(ev.MAX_ACTIONS):
-        label = dpg.get_value(f"re_act_{i}")
-        if label == "(none)":
-            continue
-        word = next(w for w, l, _a in ev.ACTIONS if l == label)
-        kind = ev.ACTION_ARG[word]
-        arg = ""
-        if kind:
-            arg = (dpg.get_value(f"re_argc_{i}") if dpg.is_item_shown(f"re_argc_{i}")
-                   else dpg.get_value(f"re_argt_{i}")) or ""
-            if kind == "wav":
-                arg = re.match(r"\s*(\d*)", arg).group(1)
-        actions.append(ev.join_action(word, arg))
+    actions = [a for a in (_action_get(_row("re", i)) for i in range(ev.MAX_ACTIONS)) if a]
     if dpg.get_value("re_cycle") and actions:
         actions = [ev.format_cycle(actions)]
     when_mods = [] if src in _BUTTONS else mods
@@ -447,14 +521,7 @@ def _preview(*_args) -> None:
     dpg.set_value("re_mods_label", "Only while these modifiers are held (a bank):" if src in _BUTTONS
                   else "Only while held (when=):")
     for i in range(ev.MAX_ACTIONS):
-        label = dpg.get_value(f"re_act_{i}")
-        word = next((w for w, l, _a in ev.ACTIONS if l == label), None)
-        kind = ev.ACTION_ARG.get(word) if word else None
-        choices = _arg_choices(kind)
-        dpg.configure_item(f"re_argc_{i}", show=bool(kind) and bool(choices), items=choices)
-        dpg.configure_item(f"re_argt_{i}", show=bool(kind) and not choices, hint=ev.ARG_HINTS.get(kind or "", ""))
-        if choices and dpg.get_value(f"re_argc_{i}") not in choices:
-            dpg.set_value(f"re_argc_{i}", choices[0])
+        _action_show(_row("re", i))
     try:
         rule = _rule_from_editor()
         text = rule.line()
@@ -517,16 +584,7 @@ def _open_rule_editor(line_no: int | None) -> None:
     dpg.set_value("re_cycle", items is not None)
     actions = items or rule.actions
     for i in range(ev.MAX_ACTIONS):
-        if i < len(actions):
-            word, arg = ev.split_action(actions[i])
-            dpg.set_value(f"re_act_{i}", ev.ACTION_LABEL.get(word, "(none)"))
-            choices = _arg_choices(ev.ACTION_ARG.get(word))
-            match = next((c for c in choices if c == arg or c.split()[0] == arg), None) if arg else None
-            dpg.set_value(f"re_argc_{i}", match or (choices[0] if choices else ""))
-            dpg.set_value(f"re_argt_{i}", arg)
-        else:
-            dpg.set_value(f"re_act_{i}", "(none)")
-            dpg.set_value(f"re_argt_{i}", "")
+        _action_put(_row("re", i), actions[i] if i < len(actions) else None, "(none)")
     dpg.configure_item("rule_editor", show=True, label="Edit rule" if line_no else "New rule")
     _preview()
 
@@ -538,6 +596,9 @@ def _rule_ok() -> None:
         return
     try:
         ev.Rule.parse(rule.trigger.text(), rule.value_text())    # a cycle of one, no button name ...
+        ranges = _setting_ranges()
+        for a in ev.flat_actions(rule.actions):
+            ev.check_action(a, ranges)                           # set:'s setting and range, when known
     except ev.EventsError as e:
         _set_status(f"Can't use this rule: {e}")
         return
@@ -570,7 +631,9 @@ def _build_rule_editor() -> None:
                           callback=_preview)
             with dpg.tooltip(dpg.last_item()):
                 dpg.add_text("press: at once; click: let go (waits for a double if there is one);\n"
-                             "double / triple; long: held; release: let go after any press")
+                             "double / triple; long: held; release: let go after any press;\n"
+                             "repeat: at once, then again every button.repeatMs while held, from\n"
+                             "button.longPressMs after the press (like a key's auto-repeat; 2.37.0+)")
             dpg.add_text("", tag="re_pad_live", color=COL_DIM)
         dpg.add_text("(no buttons defined - see the Buttons tab)", tag="re_nonamed", show=False, color=COL_DIM)
         with dpg.group(tag="re_grp_channel", show=False):
@@ -608,9 +671,7 @@ def _build_rule_editor() -> None:
             with dpg.group(horizontal=True):
                 dpg.add_combo(_ACTION_ITEMS, tag=f"re_act_{i}", width=230, default_value="(none)",
                               callback=_preview)
-                dpg.add_combo([], tag=f"re_argc_{i}", width=300, show=False, callback=_preview)
-                dpg.add_input_text(tag=f"re_argt_{i}", width=300, show=False, hint="name",
-                                   callback=_preview)
+                _arg_widgets(_row("re", i), _preview)
         dpg.add_checkbox(label="take turns: each time, the next of these (cycle)", tag="re_cycle",
                          callback=_preview)
         with dpg.tooltip(dpg.last_item()):
@@ -874,15 +935,7 @@ def _act_kind() -> str:
 
 
 def _act_action_text() -> str:
-    label = dpg.get_value("ae_act")
-    word = next((w for w, l, _a in ev.ACTIONS if l == label), "seq")
-    kind = ev.ACTION_ARG[word]
-    arg = ""
-    if kind:
-        arg = (dpg.get_value("ae_argc") if dpg.is_item_shown("ae_argc") else dpg.get_value("ae_argt")) or ""
-        if kind == "wav":
-            arg = re.match(r"\s*(\d*)", arg).group(1)
-    return ev.join_action(word, arg)
+    return _action_get(_row("ae")) or ""
 
 
 def _act_entries() -> list[tuple[str, str]]:
@@ -950,14 +1003,7 @@ def _act_preview(*_args) -> None:
     dpg.configure_item("ae_grp_cooldown", show=kind == "pick")
     dpg.configure_item("ae_startnow", show=kind in ("action", "pick"))
     dpg.set_value("ae_every_label", "gap between tracks" if kind == "playlist" else "every")
-    label = dpg.get_value("ae_act")
-    word = next((w for w, l, _a in ev.ACTIONS if l == label), None)
-    akind = ev.ACTION_ARG.get(word) if word else None
-    choices = _arg_choices(akind)
-    dpg.configure_item("ae_argc", show=bool(akind) and bool(choices), items=choices)
-    dpg.configure_item("ae_argt", show=bool(akind) and not choices, hint=ev.ARG_HINTS.get(akind or "", ""))
-    if choices and dpg.get_value("ae_argc") not in choices:
-        dpg.set_value("ae_argc", choices[0])
+    _action_show(_row("ae"))
     seqs = ["(none)"] + _arg_choices("seq")
     for i in range(_ACT_PICKS):
         dpg.configure_item(f"ae_pick_{i}", items=seqs)
@@ -979,11 +1025,7 @@ def _open_activity_editor(name: str | None) -> None:
     dpg.set_value("ae_kind", ev.ACTIVITY_KINDS[kind])
     play = act.get("play")
     if kind == "action":
-        word, arg = ev.split_action(play)
-        dpg.set_value("ae_act", ev.ACTION_LABEL.get(word, ev.ACTIONS[0][1]))
-        choices = _arg_choices(ev.ACTION_ARG.get(word))
-        dpg.set_value("ae_argc", next((c for c in choices if c == arg or c.split()[0] == arg), choices[0] if choices else ""))
-        dpg.set_value("ae_argt", arg)
+        _action_put(_row("ae"), play, ev.ACTIONS[0][1])
     m = re.match(r"playlist([AB]?):(\d+)", play, re.IGNORECASE)
     dpg.set_value("ae_player", (m.group(1) or "A").upper() if m else "A")
     dpg.set_value("ae_bank", m.group(2) if m else "1")
@@ -1044,6 +1086,12 @@ def _activity_ok() -> None:
     if kind in ("action", "pick") and not dict(entries).get("every"):
         dpg.set_value("ae_err", "Say how often (every = 30s, 20-120s, 2m ...)")
         return
+    if kind == "action":
+        try:
+            ev.check_action(dict(entries)["play"], _setting_ranges())   # set:'s value, step and range
+        except ev.EventsError as e:
+            dpg.set_value("ae_err", str(e))
+            return
     with S.lock:
         if _edit_activity and _edit_activity.lower() != name.lower():
             S.doc.delete_activity(_edit_activity)
@@ -1083,8 +1131,7 @@ def _build_activity_editor() -> None:
         with dpg.group(tag="ae_grp_action", horizontal=True):
             dpg.add_combo(_ACTION_ITEMS[1:], tag="ae_act", width=230, default_value=ev.ACTIONS[0][1],
                           callback=_act_preview)
-            dpg.add_combo([], tag="ae_argc", width=300, show=False, callback=_act_preview)
-            dpg.add_input_text(tag="ae_argt", width=300, show=False, callback=_act_preview)
+            _arg_widgets(_row("ae"), _act_preview)
         with dpg.group(tag="ae_grp_playlist", show=False, horizontal=True):
             dpg.add_text("player")
             dpg.add_combo(["A", "B"], tag="ae_player", width=50, default_value="A", callback=_act_preview)
@@ -1227,7 +1274,8 @@ def _rebuild_rules(doc, problems, loose, supported, loaded) -> None:
         dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=100)
         dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=230)
         section_comment = ""
-        unknown = doc.rule_problems()          # buttons / modifiers the file doesn't define
+        # buttons / modifiers the file doesn't define; set:'s setting and range (connected)
+        unknown = doc.rule_problems(_setting_ranges())
         for n, l in doc.rules():
             # The comment line just above a rule is shown as its heading
             prev = doc.lines[n - 2].raw.strip() if n >= 2 else ""
@@ -1461,7 +1509,8 @@ def build() -> None:
         with dpg.tab(label="Buttons"):
             dpg.add_text("Named buttons (Orchestron firmware 2.36.0+): a button is a value on any channel, so "
                          "one channel can carry several, like the pad (one down at a time). Rules use them as "
-                         "NAME (a click), NAME.press / .double / .triple / .long / .release; hold a modifier "
+                         "NAME (a click), NAME.press / .double / .triple / .long / .release / .repeat "
+                         "(2.37.0+: again and again while held); hold a modifier "
                          "for another bank (bank2+NAME). To add one: Add button, hold the transmitter button, "
                          "press Capture.", color=COL_DIM, wrap=900)
             with dpg.group(horizontal=True):

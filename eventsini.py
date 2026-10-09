@@ -1,5 +1,6 @@
 """events.ini as an editable document (Orchestron 2.30+; activities 2.32+; named buttons,
-cycle(), stopA/B, toggleA/B, toggleaudio and rules' when=audio.NAME 2.36+), no UI and no I/O.
+cycle(), stopA/B, toggleA/B, toggleaudio and rules' when=audio.NAME 2.36+; set:KEY+=N /
+set:KEY-=N and the .repeat gesture 2.37+), no UI and no I/O.
 
 The firmware's events.ini says what every transmitter control does: one rule per line,
 
@@ -24,7 +25,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-GESTURES = ["click", "press", "double", "triple", "long", "release"]   # click is the default
+# click is the default; release 2.36.0+; repeat 2.37.0+ (a press, then again every
+# button.repeatMs while held, from button.longPressMs after the press)
+GESTURES = ["click", "press", "double", "triple", "long", "release", "repeat"]
 MODES = ["idle", "manual", "control", "auto"]
 ZONES = ["low", "mid", "high"]
 MAX_CHANNEL = 24
@@ -53,7 +56,8 @@ COND_LABELS = {
 }
 
 # (action word, label, what its argument is: None, "seq", "wav", "bank", "random" (a bank or
-#  FIRST-LAST), "mode", "audio", "audio_on" (random or music), "preset", "set" (KEY=VALUE), "rec")
+#  FIRST-LAST), "mode", "audio", "audio_on" (random or music), "preset", "set" (KEY=VALUE, or
+#  KEY+=N / KEY-=N: see split_set()), "rec")
 # stopA / stopB, toggleA / toggleB and toggleaudio: Orchestron 2.36.0+
 ACTIONS: list[tuple[str, str, str | None]] = [
     ("seq", "Play sequence", "seq"),
@@ -81,7 +85,7 @@ ACTIONS: list[tuple[str, str, str | None]] = [
 ]
 ARG_HINTS = {
     "random": "a bank (2) or numbers (2001-2013)",
-    "set": "setting=value, e.g. fx.pitch.amount=120",
+    "set": "setting, e.g. audio.mix.wavB",     # then set to / raise by / lower by, and the value
     "seq": "sequence name",
     "wav": "WAV number",
 }
@@ -315,7 +319,8 @@ class Trigger:
         if self.source in ("pad", "named"):
             held = "".join(f"{m} + " for m in self.mods)
             button = f"pad button {self.button}" if self.source == "pad" else f"{self.name} button"
-            return f"{held}{button} {self.gesture}"
+            gesture = "press, repeating while held" if self.gesture == "repeat" else self.gesture
+            return f"{held}{button} {gesture}"
         if self.source == "channel":
             return (("leaves " if self.exit else "") + self.cond.describe())
         if self.source == "link":
@@ -376,11 +381,65 @@ def join_action(word: str, arg: str = "") -> str:
     return f"{word}:{arg.strip()}" if ACTION_ARG.get(word) else word
 
 
-def check_action(text: str) -> None:
+# set:'s value: KEY=VALUE sets the setting (a state rule); KEY+=N / KEY-=N (Orchestron 2.37.0+)
+# step it by N, held within its min..max by the firmware (not a state rule)
+_SET = re.compile(r"\s*(.*?)\s*([+-]?=)\s*(.*?)\s*")
+
+
+def split_set(arg: str) -> tuple[str, str, str] | None:
+    """set:'s value, as written: 'audio.mix.wavB += 10' -> ('audio.mix.wavB', '+=', '10'),
+    'fx.pitch.amount=120' -> ('fx.pitch.amount', '=', '120'); None without '='. As the firmware,
+    the key is what comes before the first '=' (less a + or - just before it)."""
+    m = _SET.fullmatch(arg)
+    return (m.group(1), m.group(2), m.group(3)) if m else None
+
+
+def join_set(key: str, op: str, value: str) -> str:
+    """split_set() back: ('audio.mix.wavB', '+=', '10') -> 'audio.mix.wavB+=10'."""
+    return f"{key.strip()}{op}{value.strip()}"
+
+
+def is_relative_set(action: str) -> bool:
+    """set:KEY+=N or set:KEY-=N: steps a setting from what it is (so never a state rule)."""
+    word, arg = split_action(action)
+    parts = split_set(arg) if word == "set" else None
+    return parts is not None and parts[1] != "="
+
+
+def check_set(arg: str, settings: dict[str, tuple[int, int]] | None = None) -> None:
+    """Raise EventsError for a set: value the firmware refuses: not KEY=VALUE, KEY+=N or KEY-=N;
+    a VALUE that isn't a whole number; a step N that isn't a whole number of 1 or more, written
+    without a sign (+=-5 is refused). settings ({key: (min, max)}: the robot's table, when it's
+    known) also checks that the setting exists, VALUE is within min..max and N isn't more than
+    max - min, as the firmware does at load."""
+    parts = split_set(arg)
+    if not parts or not parts[0]:
+        raise EventsError(f"set needs KEY=VALUE, KEY+=N or KEY-=N: {arg.strip()}")
+    key, op, value = parts
+    if op == "=":
+        if not re.fullmatch(r"[+-]?[0-9]+", value):
+            raise EventsError(f"{key} needs a whole number, not '{value}'")
+    elif not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
+        raise EventsError(f"set:{key}{op}N steps by a whole number of 1 or more, not '{value}'")
+    if settings is None:
+        return
+    if key not in settings:
+        raise EventsError(f"no setting called {key}")
+    lo, hi = settings[key]
+    v = int(value)
+    if op == "=" and not lo <= v <= hi:
+        raise EventsError(f"{key} must be {lo}-{hi}")
+    if op != "=" and v > hi - lo:
+        raise EventsError(f"set:{key}{op}N steps by 1-{hi - lo} ({key} is {lo}-{hi}), not {v}")
+
+
+def check_action(text: str, settings: dict[str, tuple[int, int]] | None = None) -> None:
     """Raise EventsError for one action the firmware refuses by its word or a value it can check
     without the SD card: an unknown word, random: / next: (the old forms), a value on a word that
     takes none, no value after ':', a bank outside 0-10, a mode or sound mode it doesn't know,
-    toggleaudio:manual. Sequence, preset, WAV and setting names are the robot's to check."""
+    toggleaudio:manual, a set: that isn't KEY=VALUE / KEY+=N / KEY-=N (check_set()). Sequence,
+    preset and WAV names are the robot's to check; settings (the robot's {key: (min, max)}, when
+    it's known) checks set:'s setting and range too."""
     t = text.strip()
     if ":" not in t:
         return                      # a word that takes no value, or a bare NAME (seq:NAME)
@@ -399,6 +458,8 @@ def check_action(text: str) -> None:
         _int(arg, 0, MAX_BANK, f"{word} bank")
     elif kind in ("mode", "audio", "audio_on") and arg.lower() not in ARG_CHOICES[kind]:
         raise EventsError(f"{word} is {_one_of(ARG_CHOICES[kind])}: {arg}")
+    elif kind == "set":
+        check_set(arg, settings)
 
 
 def _split_top(text: str) -> list[str]:
@@ -480,9 +541,12 @@ def describe_action(text: str) -> str:
                 "music": "Turn music on, or off if it's on"}[arg.lower()]
     if word in ("toggleA", "toggleB"):
         return f"Player {word[-1]}: play bank {arg}'s next file, or stop it if it's playing"
-    if word == "set" and "=" in arg:
-        key, value = arg.split("=", 1)
-        return f"Set {key.strip()} to {value.strip()}"
+    parts = split_set(arg) if word == "set" else None
+    if parts:
+        key, op, value = parts
+        return {"=": f"Set {key} to {value}",
+                "+=": f"Raise {key} by {value} (stops at its maximum)",
+                "-=": f"Lower {key} by {value} (stops at its minimum)"}[op]
     if word in ("randomA", "randomB"):
         what = f"numbered {arg}" if "-" in arg else f"from bank {arg}"
         return f"Random WAV {what} ({word[-1]})"
@@ -562,12 +626,13 @@ class Rule:
         return ", ".join(when_words(self.when_mods, self.when_modes, self.when_audio))
 
     def is_state_rule(self) -> bool:
-        """mode:, audio:, preset: and set: rules also apply at power-up and link-up (toggleaudio:
-        doesn't: it changes the sound mode from what it is); a cycle line never does
-        (re-applying it would step it)."""
+        """mode:, audio:, preset: and set:KEY=VALUE rules also apply at power-up and link-up
+        (toggleaudio: and set:KEY+=N / -=N don't: they change the sound mode or the setting from
+        what it is); a cycle line never does (re-applying it would step it)."""
         if any(is_cycle(a) for a in self.actions):
             return False
-        return any(split_action(a)[0] in ("mode", "audio", "preset", "set") for a in self.actions)
+        return any(split_action(a)[0] in ("mode", "audio", "preset", "set") and not is_relative_set(a)
+                   for a in self.actions)
 
     @staticmethod
     def parse(key: str, value: str) -> "Rule":
@@ -750,9 +815,11 @@ class EventsDoc:
                 err = f"{l.key} is already a {l.section[:-1]} (line {n})"
         return err
 
-    def rule_problems(self) -> dict[int, str]:
+    def rule_problems(self, settings: dict[str, tuple[int, int]] | None = None) -> dict[int, str]:
         """{line: problem} for the [events] rules that name a button or modifier the file
-        doesn't define (or whose line the firmware refuses), as the firmware reports them."""
+        doesn't define (or whose line the firmware refuses), as the firmware reports them.
+        settings (the robot's {key: (min, max)}, when it's known): also a set: whose setting,
+        value or step the firmware refuses (check_set())."""
         checked = self._check_named()[0]
         known = {s: {l.key.lower() for n, l in self.entries(s) if not checked[n][1]}
                  for s in ("modifiers", "buttons")}
@@ -766,6 +833,13 @@ class EventsDoc:
                 out[n] = f"no [buttons] line named {t.name}"
             elif missing:
                 out[n] = f"unknown modifier (define it in [modifiers]): {missing[0]}"
+            elif settings is not None:
+                for a in flat_actions(l.rule.actions):
+                    try:
+                        check_action(a, settings)
+                    except EventsError as e:
+                        out[n] = str(e)
+                        break
         return out
 
     def presets(self) -> dict[str, list[tuple[str, str]]]:

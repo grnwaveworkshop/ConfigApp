@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-10-09
+
+### Added (Orchestron firmware 2.37.0)
+- **Raise or lower a setting:** `set:KEY+=N` and `set:KEY-=N` step a setting by N, and the robot
+  stops it at the setting's max or min. The rule and activity editors' "Change a setting" row is
+  now the setting, **set to / raise by / lower by**, and the value or step. Rules show it in words
+  ("Raise audio.mix.wavB by 5 (stops at its maximum)"). It works anywhere an action does: rules,
+  `cycle(...)` items, an activity's `play =`. A step is not a state rule (`set:KEY=VALUE` still
+  is): applied again at power-up it would move the setting again.
+- **The repeat gesture:** `NAME.repeat` / `pad.N.repeat` fires at the press, then again every
+  `button.repeatMs` while the button is held, from `button.longPressMs` after the press (a key's
+  auto-repeat). It's in the rule editor's gesture list and reads "press, repeating while held".
+  `button.repeatMs` shows on the button config page with the other `button.` keys.
+
+### Changed
+- `set:` is checked as the firmware checks it at load: KEY=VALUE, KEY+=N or KEY-=N; VALUE a whole
+  number; N a whole number of 1 or more with no sign (`+=0`, `+=x`, `+=-5` are refused). While
+  connected, the robot's settings table also checks the setting exists, VALUE is within its
+  min..max and N is no more than max - min: a red row, and OK refuses it in the rule and activity
+  editors. Offline, the robot does those checks when it loads the file.
+
+### Tests
+- `tests/test_eventsini.py`: the volume-button example (`volup.repeat = set:audio.mix.wavB+=5`)
+  read, described and written back; relative steps with spaces, in cycles and activities, never
+  state rules; the errors (`+=0`, `+=x`, `+=-5`, no `=`, a fraction) and, with a settings table,
+  an unknown setting, a step larger than the range, a value out of range, per line in the
+  document; `.repeat` on pad and named buttons, `pad.1.repeating` refused. The shipped
+  `events.ini` files' `set:` lines are checked against Orchestron's `ConfigParams.def`.
+
 ## [0.12.0] - 2026-10-09
 
 ### Added (Orchestron firmware 2.36.0)
