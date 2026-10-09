@@ -9,9 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest  # noqa: E402
 
 from eventsini import (NEW_FILE, Condition, EventsDoc, EventsError, Rule, Trigger,  # noqa: E402
-                       button_width_us, buttons_down, cycle_items, describe_action, flat_actions,
-                       format_cycle, format_pick, join_action, learn_channel, name_error, parse_pick,
-                       split_action, split_actions, suggest_condition)
+                       button_width_us, buttons_down, check_action, cycle_items, describe_action,
+                       flat_actions, format_cycle, format_pick, format_when, join_action,
+                       learn_channel, name_error, parse_pick, parse_when, split_action, split_actions,
+                       suggest_condition, when_words)
 
 # The firmware's example (Orchestron docs/examples/events.ini), shortened
 EXAMPLE = """; events.ini - example
@@ -48,8 +49,8 @@ ch9 sideways     = stop
 def _raises(fn, what=""):
     try:
         fn()
-    except EventsError:
-        return
+    except EventsError as e:
+        return str(e)
     raise AssertionError(f"no EventsError: {what}")
 
 
@@ -127,7 +128,7 @@ def test_rule_line_and_when():
     assert r.value_text() == "mode:control, when=gate"
     r = Rule(Trigger.parse("pad.3"), ["home"], [], ["idle", "manual"])
     assert Rule.parse("pad.3", r.value_text()) == r
-    r = Rule(Trigger.parse("pad.2"), ["seq:wave", "wavA:2001"], ["shift"], ["auto"], "; hi")
+    r = Rule(Trigger.parse("pad.2"), ["seq:wave", "wavA:2001"], ["shift"], ["auto"], comment="; hi")
     back = Rule.parse(*[p.strip() for p in r.line().split("=", 1)])
     assert back == r
     assert Rule.parse("ch16 high", "home when=mode.idle|manual").when_modes == ["idle", "manual"]
@@ -498,6 +499,142 @@ def test_buttons_down_and_width():
     wide = [("a", Condition(6, "near", 1150, 100)), ("b", Condition(6, "near", 1194, 0))]
     us[5] = 1194
     assert buttons_down(wide, us, 12) == {"a"}
+
+
+# Player and sound-mode toggles, and rules' when=audio.NAME (Orchestron 2.36.0): Sparky's card
+SPARKY = """[buttons]
+music  = ch4 1900
+sounds = ch5 1900
+
+[events]
+music          = toggleB:3, when=audio.manual|random
+music          = audio:manual, when=audio.music
+music.long     = toggleaudio:music
+sounds.long    = toggleaudio:random
+link.lost      = stopseq, seq:dome_stop, stopB
+"""
+
+
+def test_stop_one_player():
+    assert split_action("stopA") == ("stopA", "") and split_action("STOPB") == ("stopB", "")
+    assert join_action("stopB") == "stopB"
+    assert describe_action("stopA") == "Stop player A" and describe_action("stopb") == "Stop player B"
+    r = Rule.parse("link.lost", "stopseq, seq:dome_stop, stopB")
+    assert r.actions == ["stopseq", "seq:dome_stop", "stopB"] and not r.is_state_rule()
+    assert Rule.parse(*[p.strip() for p in r.line().split("=", 1)]) == r
+    assert Rule.parse("pad.1", "cycle(stopA, stopB)").actions == ["cycle(stopA, stopB)"]
+    # a word, not a sequence called stopB (as before 2.36)
+    doc = EventsDoc("[events]\npad.1 = stopB\npad.2 = seq:a\n[activity.hush]\nplay = stopA\nevery = 60s\n")
+    assert doc.sequence_names() == ["a"]
+    assert doc.activities()["hush"].kind == "action"
+    assert doc.activities()["hush"].describe() == "Stop player A, every 60s"
+    for bad in ["stopA:1", "stopB:", "pad.1 = cycle(stopA:2, stopB)"]:
+        _raises(lambda: Rule.parse("pad.1", bad.split("= ")[-1]), bad)
+    assert _raises(lambda: check_action("stopA:1")) == "stopA takes no value: stopA:1"
+
+
+def test_toggle_a_bank():
+    assert split_action("toggleb:3") == ("toggleB", "3") and join_action("toggleA", "2") == "toggleA:2"
+    assert describe_action("toggleB:3") == "Player B: play bank 3's next file, or stop it if it's playing"
+    assert describe_action("toggleA:0") == "Player A: play bank 0's next file, or stop it if it's playing"
+    r = Rule.parse("music", "toggleB:3, when=audio.manual|random")
+    assert r.actions == ["toggleB:3"] and not r.is_state_rule()
+    assert Rule.parse(*[p.strip() for p in r.line().split("=", 1)]) == r
+    r = Rule.parse("pad.4", "cycle(toggleA:2, toggleB:3, stopaudio)")
+    assert flat_actions(r.actions) == ["toggleA:2", "toggleB:3", "stopaudio"]
+    assert describe_action(r.actions[0]).startswith("Each time: the next of Player A: play bank 2's")
+    doc = EventsDoc("[activity.jukebox]\nplay = toggleA:5\nevery = 5m\n")
+    assert doc.activities()["jukebox"].kind == "action" and doc.activities()["jukebox"].sequence_names() == []
+    # banks 0-10, as nextA: / nextB: (the same check)
+    for good in ["toggleA:0", "toggleB:10", "nextA:10", "TOGGLEA: 4"]:
+        check_action(good)
+    for bad in ["toggleA:11", "toggleB:-1", "toggleA:x", "toggleB:", "nextA:11", "nextB:two"]:
+        _raises(lambda: Rule.parse("pad.1", bad), bad)
+    assert _raises(lambda: check_action("toggleA:11")) == "toggleA bank must be 0-10, not 11"
+
+
+def test_toggle_the_sound_mode():
+    assert split_action("TOGGLEAUDIO:Music") == ("toggleaudio", "Music")
+    assert join_action("toggleaudio", "random") == "toggleaudio:random"
+    assert describe_action("toggleaudio:music") == "Turn music on, or off if it's on"
+    assert describe_action("toggleaudio:Random") == "Turn random sounds on, or off if they're on"
+    r = Rule.parse("music.long", "toggleaudio:music")
+    assert r.actions == ["toggleaudio:music"]
+    assert Rule.parse(*[p.strip() for p in r.line().split("=", 1)]) == r
+    # Not a state rule (audio: is): it changes the sound mode from what it is now
+    assert not r.is_state_rule()
+    assert not Rule.parse("ch19 high", "toggleaudio:random, stopB").is_state_rule()
+    assert Rule.parse("ch19 high", "audio:random").is_state_rule()
+    assert Rule.parse("ch19 high", "toggleaudio:random, audio:manual").is_state_rule()
+    assert Rule.parse("pad.1", "cycle(toggleaudio:random, toggleaudio:music)").actions
+    # manual is what it toggles back to, so toggleaudio:manual is refused
+    assert _raises(lambda: Rule.parse("pad.1", "toggleaudio:manual")) == "toggleaudio is random or music: manual"
+    for bad in ["toggleaudio:loud", "toggleaudio:", "cycle(toggleaudio:manual, stopA)", "audio:loud",
+                "mode:sleep", "toggleaudo:music"]:
+        _raises(lambda: Rule.parse("pad.1", bad), bad)
+    doc = EventsDoc("[activity.dj]\nplay = toggleaudio:music\nevery = 10m\nwhen = mode.auto\n")
+    assert doc.activities()["dj"].describe() == "Turn music on, or off if it's on, every 10m - in auto"
+
+
+def test_rules_when_audio():
+    r = Rule.parse("music", "toggleB:3, when=audio.manual|random")
+    assert (r.when_mods, r.when_modes, r.when_audio) == ([], [], ["manual", "random"])
+    assert r.describe_when() == "when sound mode is manual / random"
+    assert r.value_text() == "toggleB:3, when=audio.manual|random"
+    # with modifiers and mode.NAME, in any order: written back modifiers, mode., audio.
+    r = Rule.parse("ch5 high", "home, when=audio.music+mode.idle|auto+shift")
+    assert (r.when_mods, r.when_modes, r.when_audio) == (["shift"], ["idle", "auto"], ["music"])
+    assert r.value_text() == "home, when=shift+mode.idle|auto+audio.music"
+    assert r.describe_when() == "shift held, in idle / auto, when sound mode is music"
+    assert Rule.parse("ch5 high", r.value_text()) == r
+    # case, and the prefix repeated (as mode.idle|mode.auto)
+    assert Rule.parse("pad.1", "home, when=AUDIO.Music|audio.random").when_audio == ["music", "random"]
+    r = Rule(Trigger.parse("pad.2"), ["stopB"], ["bank2"], ["manual"], ["random"], "; hi")
+    assert r.line().endswith("stopB, when=bank2+mode.manual+audio.random ; hi")
+    assert Rule.parse(*[p.strip() for p in r.line().split("=", 1)]) == r
+    for bad in ["audio.loud", "audio.", "audio.manual|loud", "audio.idle", "mode.music"]:
+        msg = _raises(lambda: Rule.parse("pad.1", f"home, when={bad}"), bad)
+        assert msg.startswith("when=: "), msg
+    assert _raises(lambda: Rule.parse("pad.1", "home, when=audio.loud")) == \
+        "when=: audio must be manual, random or music: loud"
+    # audio.NAME isn't a modifier: no "unknown modifier" for it
+    doc = EventsDoc("[events]\npad.1 = home, when=audio.music\n")
+    assert not doc.rule_problems()
+
+
+def test_when_helpers():
+    assert parse_when("") == ([], [], [])
+    assert parse_when("shift + mode.auto + audio.music|manual") == (["shift"], ["auto"], ["music", "manual"])
+    assert format_when(["shift"], ["auto"], ["music", "manual"]) == "shift+mode.auto+audio.music|manual"
+    assert format_when([], [], []) == ""
+    assert when_words(["shift"], [], ["music"]) == ["shift held", "when sound mode is music"]
+    _raises(lambda: parse_when("audio.loud"))
+    # An activity's when= is read as written; the robot checks it
+    assert parse_when("audio.loud", strict=False) == ([], [], ["loud"])
+    doc = EventsDoc("[activity.a]\nplay = stopA\nevery = 9s\nwhen = audio.loud+mode.idle\n")
+    assert doc.activities()["a"].when_parts() == ([], ["idle"], ["loud"])
+
+
+def test_sparky_audio_buttons():
+    doc = EventsDoc(SPARKY)
+    assert doc.text() == SPARKY.replace("\n", "\r\n")
+    rules = [l.rule for _n, l in doc.rules()]
+    assert all(rules) and not doc.rule_problems()
+    words = [(r.trigger.describe(), [describe_action(a) for a in r.actions], r.describe_when()) for r in rules]
+    assert words == [
+        ("music button click", ["Player B: play bank 3's next file, or stop it if it's playing"],
+         "when sound mode is manual / random"),
+        ("music button click", ["Random sounds / music off"], "when sound mode is music"),
+        ("music button long", ["Turn music on, or off if it's on"], ""),
+        ("sounds button long", ["Turn random sounds on, or off if they're on"], ""),
+        ("RC link lost", ["Stop sequences", "Play sequence dome_stop", "Stop player B"], ""),
+    ]
+    assert [r.is_state_rule() for r in rules] == [False, True, False, False, False]
+    assert doc.sequence_names() == ["dome_stop"]
+    for n, l in doc.rules():
+        doc.set_rule(n, l.rule)                           # rewrite every rule from its model
+    assert [l.rule for _n, l in EventsDoc(doc.text()).rules()] == rules
+    assert "music            = toggleB:3, when=audio.manual|random" in doc.text()
 
 
 def load_tests(loader, tests, pattern):

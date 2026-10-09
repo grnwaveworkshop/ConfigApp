@@ -22,15 +22,29 @@ All notable changes to this project will be documented in this file.
   trigger), unique across `[buttons]` and `[modifiers]`, not on the pad's channel, at most 14 a
   channel, 32 in all, on 8 channels. A rule naming a button or modifier the file doesn't define
   is a red row before you save.
+- **New actions** in the rule and activity editors: `stopA` / `stopB` stop one player.
+  `toggleA:BANK` / `toggleB:BANK` stop that player if it's playing, else play the bank's next
+  file (bank 0-10 from a list). `toggleaudio:random` / `toggleaudio:music` turn that sound mode
+  on, or back to manual if it's on. `toggleaudio` is not a state rule; `audio:` still is.
+- **Rules by sound mode:** the rule editor has a "sound mode" row (manual, random, music) under
+  the modes. It writes `when=audio.manual|random`, after the modifiers and `mode.`, as the
+  firmware does. Rules show it in words ("when sound mode is music"), as activities do.
 
 ### Changed
 - The modifier editor refuses a name another modifier or button has, and names over 15
   characters (the firmware's limit).
+- An action the firmware would refuse is a red row before you save: an unknown word, a value on
+  a word that takes none (`stopA:1`), a bank outside 0-10 (`nextA:11`), an unknown mode or sound
+  mode, `toggleaudio:manual`.
+- The rule editor says "State rule" only for a channel rule. The firmware re-applies only those
+  at power-up and link-up, not a button's `audio:manual`.
 
 ### Tests
 - `tests/test_eventsini.py`: `[buttons]` read and written, bad and duplicate names, the pad
   channel, the limits, named triggers with gestures and banks, `.release`, `cycle()` and its
-  errors, cycles never state rules, a whole file round trip, which buttons are down.
+  errors, cycles never state rules, a whole file round trip, which buttons are down. The new
+  actions (words, descriptions, errors, `toggleaudio:manual` refused, not state rules), rules'
+  `when=audio.` with modifiers and modes, and Sparky's music and sounds buttons.
 - `tests/test_client_files.py`: `<KI>` with and without the buttons held.
 
 ## [0.11.1] - 2026-10-08

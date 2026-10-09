@@ -1,5 +1,5 @@
-"""events.ini as an editable document (Orchestron 2.30+; activities 2.32+; named buttons and
-cycle() 2.36+), no UI and no I/O.
+"""events.ini as an editable document (Orchestron 2.30+; activities 2.32+; named buttons,
+cycle(), stopA/B, toggleA/B, toggleaudio and rules' when=audio.NAME 2.36+), no UI and no I/O.
 
 The firmware's events.ini says what every transmitter control does: one rule per line,
 
@@ -53,7 +53,8 @@ COND_LABELS = {
 }
 
 # (action word, label, what its argument is: None, "seq", "wav", "bank", "random" (a bank or
-#  FIRST-LAST), "mode", "audio", "preset", "set" (KEY=VALUE), "rec")
+#  FIRST-LAST), "mode", "audio", "audio_on" (random or music), "preset", "set" (KEY=VALUE), "rec")
+# stopA / stopB, toggleA / toggleB and toggleaudio: Orchestron 2.36.0+
 ACTIONS: list[tuple[str, str, str | None]] = [
     ("seq", "Play sequence", "seq"),
     ("toggle", "Start / stop sequence", "seq"),
@@ -64,10 +65,15 @@ ACTIONS: list[tuple[str, str, str | None]] = [
     ("randomB", "Random WAV (B)", "random"),
     ("nextA", "Next WAV in a bank (A)", "bank"),
     ("nextB", "Next WAV in a bank (B)", "bank"),
+    ("toggleA", "Play / stop a bank (A)", "bank"),
+    ("toggleB", "Play / stop a bank (B)", "bank"),
+    ("stopA", "Stop player A", None),
+    ("stopB", "Stop player B", None),
     ("stopaudio", "Stop audio", None),
     ("stop", "Stop everything", None),
     ("mode", "Set the motion mode", "mode"),
     ("audio", "Sound mode", "audio"),
+    ("toggleaudio", "Sound mode on / off", "audio_on"),
     ("preset", "Apply a preset", "preset"),
     ("set", "Change a setting", "set"),
     ("home", "Home the servos", None),
@@ -81,13 +87,15 @@ ARG_HINTS = {
 }
 ACTION_ARG = {word: arg for word, _label, arg in ACTIONS}
 ACTION_LABEL = {word: label for word, label, _arg in ACTIONS}
+AUDIO_STATES = ["manual", "random", "music"]
+MAX_BANK = 10
 ARG_CHOICES = {
     "mode": MODES,
-    "audio": ["manual", "random", "music"],
+    "audio": AUDIO_STATES,
+    "audio_on": ["random", "music"],    # toggleaudio: manual is where it toggles back to
     "rec": ["toggle", "start", "stop"],
-    "bank": [str(b) for b in range(0, 11)],
+    "bank": [str(b) for b in range(0, MAX_BANK + 1)],
 }
-AUDIO_STATES = ["manual", "random", "music"]
 
 US_MIN, US_MAX = 500, 2500       # what the firmware accepts as microseconds
 
@@ -104,6 +112,11 @@ def _int(text: str, lo: int, hi: int, what: str) -> int:
     if not lo <= v <= hi:
         raise EventsError(f"{what} must be {lo}-{hi}, not {v}")
     return v
+
+
+def _one_of(names: list[str]) -> str:
+    """['a', 'b', 'c'] -> 'a, b or c' (the firmware's wording)."""
+    return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else "".join(names)
 
 
 def strip_comment(value: str) -> tuple[str, str]:
@@ -363,6 +376,31 @@ def join_action(word: str, arg: str = "") -> str:
     return f"{word}:{arg.strip()}" if ACTION_ARG.get(word) else word
 
 
+def check_action(text: str) -> None:
+    """Raise EventsError for one action the firmware refuses by its word or a value it can check
+    without the SD card: an unknown word, random: / next: (the old forms), a value on a word that
+    takes none, no value after ':', a bank outside 0-10, a mode or sound mode it doesn't know,
+    toggleaudio:manual. Sequence, preset, WAV and setting names are the robot's to check."""
+    t = text.strip()
+    if ":" not in t:
+        return                      # a word that takes no value, or a bare NAME (seq:NAME)
+    word, arg = split_action(t)
+    low = word.lower()
+    if low in ("random", "next"):
+        raise EventsError(f"write '{low}A:' (or '{low}B:'), not '{low}:' (Orchestron 2.33 refuses it)")
+    if word not in ACTION_ARG:
+        raise EventsError(f"unknown action: {word}")
+    kind = ACTION_ARG[word]
+    if kind is None:
+        raise EventsError(f"{word} takes no value: {t}")
+    if not arg:
+        raise EventsError(f"{word} needs a value after ':'")
+    if kind == "bank":
+        _int(arg, 0, MAX_BANK, f"{word} bank")
+    elif kind in ("mode", "audio", "audio_on") and arg.lower() not in ARG_CHOICES[kind]:
+        raise EventsError(f"{word} is {_one_of(ARG_CHOICES[kind])}: {arg}")
+
+
 def _split_top(text: str) -> list[str]:
     """Split on the commas outside brackets, each part trimmed (empty ones too)."""
     parts, depth, start = [], 0, 0
@@ -437,6 +475,11 @@ def describe_action(text: str) -> str:
     word, arg = split_action(text)
     if word == "audio":
         return {"random": "Random sounds on", "music": "Music on"}.get(arg.lower(), "Random sounds / music off")
+    if word == "toggleaudio" and arg.lower() in ARG_CHOICES["audio_on"]:
+        return {"random": "Turn random sounds on, or off if they're on",
+                "music": "Turn music on, or off if it's on"}[arg.lower()]
+    if word in ("toggleA", "toggleB"):
+        return f"Player {word[-1]}: play bank {arg}'s next file, or stop it if it's playing"
     if word == "set" and "=" in arg:
         key, value = arg.split("=", 1)
         return f"Set {key.strip()} to {value.strip()}"
@@ -449,21 +492,66 @@ def describe_action(text: str) -> str:
     return f"{label} {arg}".strip()
 
 
+# --------------------------------------------------------------------------- #
+# when= (rules and activities)
+# --------------------------------------------------------------------------- #
+def parse_when(text: str, strict: bool = True) -> tuple[list[str], list[str], list[str]]:
+    """'shift+mode.idle|manual+audio.music' -> (['shift'], ['idle', 'manual'], ['music']): the
+    modifiers, motion modes and sound modes (audio states) that must all hold. A name may repeat
+    its prefix (mode.idle|mode.manual), as the firmware reads it. strict: raise EventsError for a
+    mode or sound mode the firmware doesn't know. Whether the modifiers exist is the document's
+    check (EventsDoc.rule_problems())."""
+    mods: list[str] = []
+    groups = {"mode.": (MODES, []), "audio.": (AUDIO_STATES, [])}
+    for item in (w.strip() for w in text.split("+") if w.strip()):
+        prefix = next((p for p in groups if item.lower().startswith(p)), None)
+        if prefix is None:
+            mods.append(item)
+            continue
+        names, out = groups[prefix]
+        for name in item[len(prefix):].split("|"):
+            name = name.strip().lower()
+            name = name[len(prefix):] if name.startswith(prefix) else name
+            if strict and name not in names:
+                raise EventsError(f"when=: {prefix[:-1]} must be {_one_of(names)}: {name}")
+            out.append(name)
+    return mods, groups["mode."][1], groups["audio."][1]
+
+
+def format_when(mods: list[str], modes: list[str], audio: list[str]) -> str:
+    """parse_when()'s parts back to text, in the firmware's order: modifiers, mode., audio."""
+    parts = list(mods)
+    if modes:
+        parts.append("mode." + "|".join(modes))
+    if audio:
+        parts.append("audio." + "|".join(audio))
+    return "+".join(parts)
+
+
+def when_words(mods: list[str], modes: list[str], audio: list[str]) -> list[str]:
+    """parse_when()'s parts in words: ['shift held', 'in idle / manual', 'when sound mode is music']."""
+    words = [f"{m} held" for m in mods]
+    if modes:
+        words.append("in " + " / ".join(modes))
+    if audio:
+        words.append("when sound mode is " + " / ".join(audio))
+    return words
+
+
 @dataclass
 class Rule:
     trigger: Trigger = field(default_factory=Trigger)
     actions: list[str] = field(default_factory=list)
     when_mods: list[str] = field(default_factory=list)
     when_modes: list[str] = field(default_factory=list)
+    when_audio: list[str] = field(default_factory=list)   # sound modes (Orchestron 2.36.0+)
     comment: str = ""          # "; ..." kept at the end of the line
 
     def value_text(self) -> str:
         v = ", ".join(a.strip() for a in self.actions if a.strip())
-        when = list(self.when_mods)
-        if self.when_modes:
-            when.append("mode." + "|".join(self.when_modes))
+        when = format_when(self.when_mods, self.when_modes, self.when_audio)
         if when:
-            v += (", " if v else "") + "when=" + "+".join(when)
+            v += (", " if v else "") + "when=" + when
         return v
 
     def line(self) -> str:
@@ -471,14 +559,12 @@ class Rule:
         return f"{text:<40} {self.comment}" if self.comment else text
 
     def describe_when(self) -> str:
-        parts = [f"{m} held" for m in self.when_mods]
-        if self.when_modes:
-            parts.append("in " + " / ".join(self.when_modes))
-        return ", ".join(parts)
+        return ", ".join(when_words(self.when_mods, self.when_modes, self.when_audio))
 
     def is_state_rule(self) -> bool:
-        """mode:, audio:, preset: and set: rules also apply at power-up and link-up; a cycle
-        line never does (re-applying it would step it)."""
+        """mode:, audio:, preset: and set: rules also apply at power-up and link-up (toggleaudio:
+        doesn't: it changes the sound mode from what it is); a cycle line never does
+        (re-applying it would step it)."""
         if any(is_cycle(a) for a in self.actions):
             return False
         return any(split_action(a)[0] in ("mode", "audio", "preset", "set") for a in self.actions)
@@ -498,22 +584,9 @@ class Rule:
             raise EventsError("cycle(...) must be the line's only action")
         items = cycle_items(actions[0]) if len(actions) == 1 else None   # raises for a bad cycle
         for a in items or actions:
-            word = split_action(a)[0].lower()
-            if word in ("random", "next"):
-                raise EventsError(f"write '{word}A:' (or '{word}B:'), not '{word}:' (Orchestron 2.33 refuses it)")
-        mods: list[str] = []
-        modes: list[str] = []
-        for item in (w.strip() for w in when.split("+") if w.strip()):
-            if item.lower().startswith("mode."):
-                for name in item[5:].split("|"):
-                    name = name.strip().lower()
-                    name = name[5:] if name.startswith("mode.") else name
-                    if name not in MODES:
-                        raise EventsError(f"when=: mode must be one of {', '.join(MODES)}: {name}")
-                    modes.append(name)
-            else:
-                mods.append(item)
-        return Rule(Trigger.parse(key), actions, mods, modes, comment)
+            check_action(a)
+        mods, modes, audio = parse_when(when)
+        return Rule(Trigger.parse(key), actions, mods, modes, audio, comment)
 
 
 # --------------------------------------------------------------------------- #
@@ -920,17 +993,8 @@ class Activity:
         return []
 
     def when_parts(self) -> tuple[list[str], list[str], list[str]]:
-        """(modifiers, modes, audio states) from when=."""
-        mods, modes, audio = [], [], []
-        for item in (w.strip() for w in self.get("when").split("+") if w.strip()):
-            low = item.lower()
-            if low.startswith("mode."):
-                modes += [m.replace("mode.", "") for m in low[5:].split("|")]
-            elif low.startswith("audio."):
-                audio += low[6:].split("|")
-            else:
-                mods.append(item)
-        return mods, modes, audio
+        """(modifiers, modes, audio states) from when=, as written (the robot checks the names)."""
+        return parse_when(self.get("when"), strict=False)
 
     def describe(self) -> str:
         kind = self.kind
@@ -957,11 +1021,7 @@ class Activity:
         if cooldown:
             what += f", no repeat within {cooldown}"
         mods, modes, audio = self.when_parts()
-        cond = [f"{m} held" for m in mods]
-        if modes:
-            cond.append("in " + " / ".join(modes))
-        if audio:
-            cond.append("when sound mode is " + " / ".join(audio))
+        cond = when_words(mods, modes, audio)
         if kind == "alive" and "auto" not in modes:
             cond.append("in AUTO")
         return what + (" - " + ", ".join(cond) if cond else "")

@@ -425,12 +425,15 @@ def _rule_from_editor() -> ev.Rule:
     when_modes = [m for m in ev.MODES if dpg.get_value(f"re_when_{m}")]
     if len(when_modes) == len(ev.MODES):
         when_modes = []
+    when_audio = [a for a in ev.AUDIO_STATES if dpg.get_value(f"re_audio_{a}")]
+    if len(when_audio) == len(ev.AUDIO_STATES):
+        when_audio = []
     comment = ""
     if _edit_line is not None:
         old = S.doc.rule_at(_edit_line)
         if old is not None and old.rule is not None:
             comment = old.rule.comment
-    return ev.Rule(t, actions, when_mods, when_modes, comment)
+    return ev.Rule(t, actions, when_mods, when_modes, when_audio, comment)
 
 
 def _preview(*_args) -> None:
@@ -463,7 +466,7 @@ def _preview(*_args) -> None:
                       + (f" ({rule.describe_when()})" if rule.describe_when() else "")
                       + ": " + (", ".join(ev.describe_action(a) for a in rule.actions) or "-")
                       + ("\nState rule: also applied at power-up and when the link returns."
-                         if rule.is_state_rule() else "")
+                         if rule.is_state_rule() and rule.trigger.source == "channel" else "")
                       + ("\nIt starts at the first at power-up and on every reload." if cycle else ""))
     except (ValueError, StopIteration) as e:
         dpg.set_value("re_preview", f"? {e}")
@@ -508,6 +511,8 @@ def _open_rule_editor(line_no: int | None) -> None:
     dpg.configure_item("re_nomods", show=not names)
     for m in ev.MODES:
         dpg.set_value(f"re_when_{m}", m in rule.when_modes)
+    for a in ev.AUDIO_STATES:
+        dpg.set_value(f"re_audio_{a}", a in rule.when_audio)
     items = ev.cycle_items(rule.actions[0]) if len(rule.actions) == 1 else None
     dpg.set_value("re_cycle", items is not None)
     actions = items or rule.actions
@@ -547,7 +552,7 @@ def _rule_test() -> None:
 
 
 def _build_rule_editor() -> None:
-    with dpg.window(tag="rule_editor", label="Rule", modal=True, show=False, width=720, height=500,
+    with dpg.window(tag="rule_editor", label="Rule", modal=True, show=False, width=720, height=530,
                     on_close=lambda: _learn_stop()):
         dpg.add_text("When", color=COL_HEAD)
         dpg.add_radio_button(_SOURCES, tag="re_source", horizontal=True, default_value=_SOURCES[0],
@@ -585,10 +590,17 @@ def _build_rule_editor() -> None:
             for i in range(MAX_MODIFIERS):
                 dpg.add_checkbox(label="", tag=f"re_mod_{i}", show=False, callback=_preview)
             dpg.add_text("(none defined - see the Modifiers tab)", tag="re_nomods", color=COL_DIM)
-        dpg.add_text("Only in these modes (none ticked = any mode):", color=COL_DIM)
+        dpg.add_text("Only in these modes (none ticked in a row = any):", color=COL_DIM)
         with dpg.group(horizontal=True):
+            dpg.add_text("mode:")
             for m in ev.MODES:
                 dpg.add_checkbox(label=m, tag=f"re_when_{m}", callback=_preview)
+        with dpg.group(horizontal=True):
+            dpg.add_text("sound mode:")
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("when=audio.NAME (Orchestron 2.36.0+): manual is neither random sounds nor music")
+            for a in ev.AUDIO_STATES:
+                dpg.add_checkbox(label=a, tag=f"re_audio_{a}", callback=_preview)
 
         dpg.add_separator()
         dpg.add_text("Do", color=COL_HEAD)
@@ -920,16 +932,12 @@ def _act_entries() -> list[tuple[str, str]]:
         for k, v in (old.entries if old else []):
             if k.lower() not in {e.lower() for e in edited}:
                 entries.append((k, v))
-    when = [dpg.get_item_label(f"ae_mod_{i}") for i in range(MAX_MODIFIERS)
-            if dpg.is_item_shown(f"ae_mod_{i}") and dpg.get_value(f"ae_mod_{i}")]
-    modes = [m for m in ev.MODES if dpg.get_value(f"ae_mode_{m}")]
-    if modes:
-        when.append("mode." + "|".join(modes))
-    audio = [a for a in ev.AUDIO_STATES if dpg.get_value(f"ae_audio_{a}")]
-    if audio:
-        when.append("audio." + "|".join(audio))
+    when = ev.format_when([dpg.get_item_label(f"ae_mod_{i}") for i in range(MAX_MODIFIERS)
+                           if dpg.is_item_shown(f"ae_mod_{i}") and dpg.get_value(f"ae_mod_{i}")],
+                          [m for m in ev.MODES if dpg.get_value(f"ae_mode_{m}")],
+                          [a for a in ev.AUDIO_STATES if dpg.get_value(f"ae_audio_{a}")])
     if when:
-        entries.append(("when", "+".join(when)))
+        entries.append(("when", when))
     return entries
 
 
