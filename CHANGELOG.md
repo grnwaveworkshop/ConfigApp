@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-10-09
+
+### Added (Orchestron firmware 2.36.0)
+- **Buttons tab** in the Events tab: the `[buttons]` section, one row per button with its name,
+  channel, value as written and a live **DOWN** light. Add, Edit and Delete. A button is a value
+  on any channel (`dome = ch3 1900`), so one channel can carry several, like the pad.
+- **Capture** in the button editor: hold the transmitter button and press Capture. It takes the
+  channel that moved since the editor opened, at its value in us. If nothing has moved yet, it
+  waits 4 s for you to hold the button (Learn, for buttons).
+- **Named buttons in the rule editor:** "When" offers **Named button**, with the gestures and the
+  modifiers as banks (`bank2+happy`). The new **release** gesture is there for pad buttons too.
+- **cycle(A, B[, C]):** tick "take turns" under the actions and the 2 or 3 actions become a
+  cycle: each time the rule fires it runs the next one. Rules show it in words ("Each time: the
+  next of ..."). Test runs the next item each time, as the robot does.
+- **The robot's buttons held** (`<KI>`'s new last field) light the Buttons tab and show on the
+  Inputs tab. Older firmware doesn't send it: the app then decides from the channel values.
+- **Checks as the firmware's:** button names (1-15 letters, digits or `_`, not read as a
+  trigger), unique across `[buttons]` and `[modifiers]`, not on the pad's channel, at most 14 a
+  channel, 32 in all, on 8 channels. A rule naming a button or modifier the file doesn't define
+  is a red row before you save.
+
+### Changed
+- The modifier editor refuses a name another modifier or button has, and names over 15
+  characters (the firmware's limit).
+
+### Tests
+- `tests/test_eventsini.py`: `[buttons]` read and written, bad and duplicate names, the pad
+  channel, the limits, named triggers with gestures and banks, `.release`, `cycle()` and its
+  errors, cycles never state rules, a whole file round trip, which buttons are down.
+- `tests/test_client_files.py`: `<KI>` with and without the buttons held.
+
 ## [0.11.1] - 2026-10-08
 
 ### Changed (BallBot firmware 0.7.10)

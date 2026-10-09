@@ -9,8 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest  # noqa: E402
 
 from eventsini import (NEW_FILE, Condition, EventsDoc, EventsError, Rule, Trigger,  # noqa: E402
-                       describe_action, format_pick, join_action, learn_channel, parse_pick,
-                       split_action, suggest_condition)
+                       button_width_us, buttons_down, cycle_items, describe_action, flat_actions,
+                       format_cycle, format_pick, join_action, learn_channel, name_error, parse_pick,
+                       split_action, split_actions, suggest_condition)
 
 # The firmware's example (Orchestron docs/examples/events.ini), shortened
 EXAMPLE = """; events.ini - example
@@ -114,8 +115,11 @@ def test_old_forms_refused():
 
 def test_bad_triggers():
     for bad in ["pad.15", "pad.1.quad", "ch25 high", "ch9", "ch9 3000", "mode.sleep",
-                "ch4 1700-1300", "+pad.1", "wobble"]:
+                "ch4 1700-1300", "+pad.1", "link.down", "pad", "pad.x", "mode", "wob ble",
+                "dome.quad", "shift+ch5 high"]:
         _raises(lambda: Trigger.parse(bad), bad)
+    # "wobble" reads as a [buttons] name: whether there is one is the document's check
+    assert Trigger.parse("wobble") == Trigger("named", name="wobble")
 
 
 def test_rule_line_and_when():
@@ -284,6 +288,8 @@ def test_shipped_files():
         assert doc.text() == text.replace("\r\n", "\n").replace("\n", "\r\n"), f
         bad = [l.raw for _n, l in doc.rules() if l.rule is None]
         assert not bad, (f, bad)
+        named = [(name, err) for _n, name, _c, err in doc.buttons() + doc.modifiers() if err]
+        assert not named and not doc.pad_problem() and not doc.rule_problems(), (f, named, doc.rule_problems())
         for name, act in doc.activities().items():
             assert act.kind, (f, name)
 
@@ -301,6 +307,197 @@ def test_move_rules():
     assert keys() == before
     last = doc.rules()[-1][0]
     assert doc.move_entry(last, +1) == last                       # already last
+
+
+# Named buttons and cycle() (Orchestron 2.36.0, docs/BUTTON_TRIGGERS.md section 5)
+BUTTONS = """; Sparky
+[inputs]
+pad = ch17
+
+[buttons]
+; NAME = chN VALUE
+dome   = ch3 1900
+music  = ch4 1900   ; the music button
+happy  = ch6 1106            ; several buttons on one channel
+sad    = ch6 1194
+horn   = ch7 high
+siren  = ch8 1500~30
+
+[modifiers]
+bank2  = ch9 high
+
+[events]
+dome.press    = cycle(seq:dome_right, seq:dome_left)   ; each press: the next one
+dome.release  = seq:dome_stop
+music         = nextB:3
+music.double  = nextB:3
+music.long    = audio:music
+happy         = seq:wave
+bank2+happy   = seq:dance
+pad.3.release = stopseq
+ch12 high     = cycle(mode:auto, mode:idle), when=mode.idle|auto
+"""
+
+
+def test_buttons_section():
+    doc = EventsDoc(BUTTONS)
+    assert doc.text() == BUTTONS.replace("\n", "\r\n")
+    assert doc.button_names() == ["dome", "music", "happy", "sad", "horn", "siren"]
+    rows = {name: (cond, err) for _n, name, cond, err in doc.buttons()}
+    assert rows["dome"] == (Condition(3, "near", 1900, 0), "")
+    assert rows["horn"] == (Condition(7, "high"), "")
+    assert rows["siren"] == (Condition(8, "near", 1500, 30), "")
+    assert not doc.pad_problem() and not doc.rule_problems()
+    assert all(l.rule is not None for _n, l in doc.rules())
+    assert doc.modifiers()[0][1:] == ("bank2", Condition(9, "high"), "")
+    assert doc.sequence_names() == ["dome_right", "dome_left", "dome_stop", "wave", "dance"]
+
+
+def test_write_buttons():
+    doc = EventsDoc(BUTTONS)
+    n = doc.set_button(None, "lid", Condition(5, "near", 1980))
+    assert doc.lines[n - 1].raw == "lid = ch5 1980" and doc.lines[n - 2].key == "siren"
+    music = next(m for m, name, _c, _e in doc.buttons() if name == "music")
+    doc.set_button(music, "music", Condition(4, "near", 1100, 40))
+    assert doc.lines[music - 1].raw == "music = ch4 1100~40   ; the music button"
+    again = EventsDoc(doc.text())
+    assert again.buttons() == doc.buttons() and again.text() == doc.text()
+    # A file without [buttons] gets the section above [modifiers] (or [events])
+    doc = EventsDoc(EXAMPLE)
+    n = doc.set_button(None, "dome", Condition(3, "near", 1900))
+    assert doc.lines[n - 2].raw == "[buttons]" and doc.lines[n].raw == "" and doc.lines[n + 1].raw == "[modifiers]"
+    assert doc.set_button(None, "music", Condition(4, "near", 1900)) == n + 1
+    assert EventsDoc(doc.text()).button_names() == ["dome", "music"]
+    doc = EventsDoc("[events]\npad.1 = home\n")
+    n = doc.set_button(None, "dome", Condition(3, "near", 1900))
+    assert [l.raw for l in doc.lines][:3] == ["[buttons]", "dome = ch3 1900", ""]
+
+
+def test_button_names():
+    for bad in ["ch5", "CH12", "pad", "pad3", "button3", "mode", "link", "a" * 16, ""]:
+        assert name_error(bad, "button", plain=True), bad
+    for good in ["chin", "modest", "padding", "linked", "dome_2", "a" * 15, "3way"]:
+        assert not name_error(good, "button", plain=True), good
+    assert name_error("dome-1", "button", plain=True) and not name_error("dome-1", "modifier")
+    doc = EventsDoc("[buttons]\nch5 = ch5 1900\npad = ch3 1900\ndome-1 = ch4 1900\nok = ch2 1900\n"
+                    "[modifiers]\nmy-mod = ch9 high\n")
+    errs = {name: err for _n, name, _c, err in doc.buttons()}
+    assert errs["ch5"] and errs["pad"] and errs["dome-1"] and not errs["ok"]
+    assert not doc.modifiers()[0][3]                       # the firmware takes it for a modifier
+    assert doc.name_problem("my-mod", "modifiers")         # ... the editor doesn't write it
+    assert doc.name_problem("OK", "modifiers") == "ok is already a button (line 5)"
+    assert doc.name_problem("ok", "buttons", 5) == ""      # its own line
+
+
+def test_button_vs_modifier_names():
+    # Unique across [buttons] and [modifiers], case-insensitively: the later line is refused
+    doc = EventsDoc("[modifiers]\nbank2 = ch9 high\n[buttons]\nBank2 = ch3 1900\n")
+    assert doc.modifiers()[0][3] == ""
+    assert "already used" in doc.buttons()[0][3]
+    doc = EventsDoc("[buttons]\ndome = ch3 1900\n[modifiers]\nDOME = ch9 high\n")
+    assert doc.buttons()[0][3] == "" and "already used" in doc.modifiers()[0][3]
+    doc = EventsDoc("[buttons]\ndome = ch3 1900\ndome = ch4 1900\n")
+    assert [e != "" for _n, _nm, _c, e in doc.buttons()] == [False, True]
+
+
+def test_buttons_not_on_the_pad_channel():
+    doc = EventsDoc("[inputs]\npad = ch6\n[buttons]\nhappy = ch6 1106\nsad = ch5 1194\n")
+    assert "pad" in doc.buttons()[0][3] and doc.buttons()[1][3] == "" and not doc.pad_problem()
+    doc = EventsDoc("[buttons]\nhappy = ch6 1106\n[inputs]\npad = ch6\n")
+    assert doc.buttons()[0][3] == "" and "ch6 carries [buttons]" in doc.pad_problem()
+    doc = EventsDoc("[inputs]\npad = none\n[buttons]\nhappy = ch6 1106\n")
+    assert doc.buttons()[0][3] == "" and not doc.pad_problem()
+
+
+def test_button_limits():
+    # 14 per channel
+    doc = EventsDoc("[buttons]\n" + "".join(f"b{i} = ch6 {1000 + 50 * i}\n" for i in range(15)))
+    assert [bool(e) for _n, _nm, _c, e in doc.buttons()] == [False] * 14 + [True]
+    assert "14" in doc.buttons()[14][3]
+    # 8 channels
+    doc = EventsDoc("[buttons]\n" + "".join(f"b{c} = ch{c} 1900\n" for c in range(1, 10)) + "again = ch1 1100\n")
+    assert [bool(e) for _n, _nm, _c, e in doc.buttons()] == [False] * 8 + [True, False]
+    # 32 in all (4 channels of 8, then one more)
+    doc = EventsDoc("[buttons]\n" + "".join(f"b{c}_{i} = ch{c} {1000 + 100 * i}\n"
+                                            for c in range(1, 6) for i in range(8)))
+    assert [bool(e) for _n, _nm, _c, e in doc.buttons()] == [False] * 32 + [True] * 8
+    assert "32" in doc.buttons()[32][3]
+    # a refused line doesn't count: the next good one is still taken
+    doc = EventsDoc("[modifiers]\n" + "".join(f"m{i} = ch9 high\n" for i in range(9)))
+    assert [bool(e) for _n, _nm, _c, e in doc.modifiers()] == [False] * 8 + [True]
+
+
+def test_named_triggers():
+    for text in ["dome", "dome.press", "dome.double", "dome.triple", "dome.long", "dome.release",
+                 "bank2+happy", "bank2+bank3+happy.long", "pad.3.release", "shift+pad.1.release"]:
+        assert Trigger.parse(text).text() == text, text
+    assert Trigger.parse("dome.click").text() == "dome"
+    t = Trigger.parse("bank2+happy.release")
+    assert (t.source, t.name, t.gesture, t.mods) == ("named", "happy", "release", ["bank2"])
+    assert t.describe() == "bank2 + happy button release"
+    assert Trigger.parse("pad.3.release").describe() == "pad button 3 release"
+    # The document checks the names: an undefined button or modifier is the firmware's error too
+    doc = EventsDoc(BUTTONS + "wobble = stop\nbank9+dome = stop\nch5 high = home, when=gate\n"
+                    "Dome.long = stop\n")
+    problems = {doc.lines[n - 1].key: p for n, p in doc.rule_problems().items()}
+    assert problems == {"wobble": "no [buttons] line named wobble",
+                        "bank9+dome": "unknown modifier (define it in [modifiers]): bank9",
+                        "ch5 high": "unknown modifier (define it in [modifiers]): gate"}
+    # A button the firmware refuses (the pad's channel) can't be used either
+    doc = EventsDoc("[inputs]\npad = ch6\n[buttons]\nhappy = ch6 1106\n[events]\nhappy = seq:wave\n")
+    assert list(doc.rule_problems().values()) == ["no [buttons] line named happy"]
+
+
+def test_cycle():
+    r = Rule.parse("dome.press", "cycle(seq:dome_right, seq:dome_left)   ; each press")
+    assert r.actions == ["cycle(seq:dome_right, seq:dome_left)"] and r.comment == "; each press"
+    assert cycle_items(r.actions[0]) == ["seq:dome_right", "seq:dome_left"]
+    assert describe_action(r.actions[0]) == ("Each time: the next of Play sequence dome_right, "
+                                             "Play sequence dome_left")
+    assert Rule.parse(*[p.strip() for p in r.line().split("=", 1)]) == r
+    r = Rule.parse("ch12 high", "cycle(mode:auto, mode:idle, home), when=bank2+mode.idle")
+    assert len(cycle_items(r.actions[0])) == 3 and r.when_mods == ["bank2"] and r.when_modes == ["idle"]
+    assert not r.is_state_rule()                          # mode: in a cycle: never a state rule
+    assert Rule.parse("ch12 high", "mode:auto").is_state_rule()
+    assert Rule.parse("pad.1", "CYCLE(home, stop)").actions == ["CYCLE(home, stop)"]
+    assert split_actions("seq:a, cycle(b, c), home") == ["seq:a", "cycle(b, c)", "home"]
+    assert flat_actions(["cycle(seq:a, wavA:2)", "home"]) == ["seq:a", "wavA:2", "home"]
+    assert format_cycle(["seq:a", " seq:b "]) == "cycle(seq:a, seq:b)"
+    assert cycle_items("seq:a") is None
+    assert cycle_items("cycle(cycle_left, seq:cycle_right)") == ["cycle_left", "seq:cycle_right"]  # names
+    for bad in ["cycle(seq:a)", "cycle(a, b, c, d)", "cycle(cycle(a, b), c)", "cycle(a, cycle(b, c))",
+                "seq:x, cycle(a, b)", "cycle(a, b), seq:x", "cycle(a, b) home", "cycle(a, b",
+                "cycle(a, , b)", "cycle()", "cycle(random:2, seq:b)"]:
+        _raises(lambda: Rule.parse("pad.1", bad), bad)
+
+
+def test_whole_file_round_trip():
+    doc = EventsDoc(BUTTONS + ACTIVITIES.replace("[events]\npad.1 = seq:wave\npad.2 = seq:look\n", ""))
+    text = doc.text()
+    for n, l in doc.rules():
+        doc.set_rule(n, l.rule)                           # rewrite every rule from its model
+    again = EventsDoc(doc.text())
+    assert again.buttons() == EventsDoc(text).buttons()
+    assert [l.rule for _n, l in again.rules()] == [l.rule for _n, l in EventsDoc(text).rules()]
+    assert EventsDoc(text).text() == text
+
+
+def test_buttons_down_and_width():
+    assert button_width_us() == 12                       # 20 SBUS units, 1000 us over 172..1811
+    assert button_width_us({"button.deadband": 40}) == 24
+    assert button_width_us({"rc.sbus.min": 1811}) == 1   # nonsense range: still 1 us
+    doc = EventsDoc(BUTTONS)
+    rows = [(name, c) for _n, name, c, _e in doc.buttons()]
+    us = [1000] * 24
+    assert buttons_down(rows, us, 12) == set()
+    us[2], us[5], us[6] = 1910, 1100, 1900               # dome, happy, horn
+    assert buttons_down(rows, us, 12) == {"dome", "happy", "horn"}
+    us[2] = 1913                                         # just outside +/- 12
+    assert "dome" not in buttons_down(rows, us, 12)
+    # One button per channel: the first line that matches wins
+    wide = [("a", Condition(6, "near", 1150, 100)), ("b", Condition(6, "near", 1194, 0))]
+    us[5] = 1194
+    assert buttons_down(wide, us, 12) == {"a"}
 
 
 def load_tests(loader, tests, pattern):

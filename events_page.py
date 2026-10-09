@@ -1,11 +1,13 @@
 """Events tab: edit the robot's events.ini without touching the text (Orchestron 2.31.0+;
-activities and the 2.32 actions with firmware 2.32.0+).
+activities and the 2.32 actions with firmware 2.32.0+; named buttons and cycle() 2.36.0+).
 
 What every transmitter control does is a rule in events.ini (see eventsini.py). This tab
 reads the file from the robot's SD card, shows each rule in plain words, edits them with
 dropdowns (with Learn: move a control and the editor picks the channel and position), and
 writes the file back. The robot then reloads it and reports any line it didn't accept,
-which shows on that row. While connected, a row lights up when its rule fires.
+which shows on that row. While connected, a row lights up when its rule fires. The Buttons
+tab lists the [buttons] with a live "down" light; its editor's Capture takes a transmitter
+button's channel and value.
 
 Files can also be opened and saved on the PC, with or without a robot.
 
@@ -27,10 +29,13 @@ import eventsini as ev
 from protocol import ProtocolError
 
 MIN_FW = 23100                  # first Orchestron with <KF> <KU> <KV> <KI>
-POLL_S = 0.25                   # <KI> while the editor or the Inputs tab is open
+POLL_S = 0.25                   # <KI> while an editor, the Buttons or the Inputs tab is open
 LEARN_S = 4.0
+LEARN_MOVE = 150                # us a control must move for Learn
+CAPTURE_MOVE = 40               # ... for Capture: buttons on one channel can be ~90 us apart
 FIRED_S = 1.5
-MAX_MODIFIERS = 8
+MAX_MODIFIERS = ev.MAX_MODIFIERS
+_LEARN_LABELS = {"re_c": "Learn", "me_c": "Learn", "be_c": "Capture"}   # condition widgets
 
 COL_HEAD = (150, 200, 255)
 COL_DIM = (140, 140, 140)
@@ -61,12 +66,16 @@ class _State:
         # From the robot, for the dropdowns
         self.sequences: list[str] = []
         self.wavs: list[str] = []
-        self.inputs: tuple[bool, int, list[int]] | None = None
+        # <KI>: link up, pad button, channels in us, named buttons held (None: before 2.36)
+        self.inputs: tuple[bool, int, list[int], int | None] | None = None
+        self.button_width = ev.button_width_us()   # config.ini button.deadband in us
         self.poll_pending = False
         self.next_poll = 0.0
         self.learn_until = 0.0
         self.learn_base: list[int] | None = None
-        self.learn_target = ""          # "rule" or "mod"
+        self.learn_target = ""          # the condition widgets' prefix (_LEARN_LABELS)
+        self.learn_move = LEARN_MOVE
+        self.capture_base: list[int] | None = None  # channels when the button editor opened
         # Connection
         self.fw = 0
         self.supported = False
@@ -83,8 +92,10 @@ _on_saved: Callable[[], None] = lambda: None
 
 # Editor state (main thread only)
 _edit_line: int | None = None       # line being edited, None = a new rule
-_edit_mod_line: int | None = None
 _raw_line: int | None = None
+_cycle_next: dict[str, int] = {}    # Test on a cycle(...): the item it runs next, as the robot steps it
+# Buttons tab rows: (id(Line), name, condition; None if the line has a problem), file order
+_btn_rows: list[tuple[int, str, ev.Condition | None]] = []
 
 
 def init(io_put, get_bot, set_status, param_keys, on_saved) -> None:
@@ -201,12 +212,25 @@ def job_save() -> None:
 
 
 def job_test(actions: list[str]) -> None:
+    # A cycle runs its next item, each Test the next one
+    todo = []
+    for a in actions:
+        try:
+            items = ev.cycle_items(a)
+        except ev.EventsError:
+            items = None
+        if items:
+            i = _cycle_next.get(a, 0) % len(items)
+            _cycle_next[a] = i + 1
+            a = items[i]
+        todo.append(a)
+
     def run() -> None:
         bot = _bot()
         if bot is None:
             return
         out = []
-        for a in actions:
+        for a in todo:
             try:
                 ok, msg = bot.run_action(a)
                 out.append(f"{a}: {msg}" if ok else f"{a}: FAILED {msg}")
@@ -220,11 +244,16 @@ def job_poll_inputs() -> None:
     def run() -> None:
         bot = _bot()
         try:
-            got = bot.inputs() if bot is not None else None
+            got = bot.inputs_and_buttons() if bot is not None else None
         except ProtocolError:
             got = None
+        width = None
+        if bot is not None:
+            # button.deadband in us, from the robot's settings (a live edit counts at once)
+            width = ev.button_width_us({k: p.value for k, p in bot.params.items() if k in ev.BUTTON_WIDTH_KEYS})
         with S.lock:
             S.inputs = got
+            S.button_width = width or S.button_width
             S.poll_pending = False
     _io_put(run)
 
@@ -291,8 +320,9 @@ def _delete(line_no: int) -> None:
 # --------------------------------------------------------------------------- #
 # Rule editor
 # --------------------------------------------------------------------------- #
-_SOURCES = ["Pad button", "Channel (switch / stick)", "RC link", "Mode change"]
-_SOURCE_KEYS = ["pad", "channel", "link", "mode"]
+_SOURCES = ["Pad button", "Named button", "Channel (switch / stick)", "RC link", "Mode change"]
+_SOURCE_KEYS = ["pad", "named", "channel", "link", "mode"]
+_BUTTONS = ("pad", "named")         # sources with gestures and modifier+ prefixes (banks)
 _ACTION_ITEMS = ["(none)"] + [label for _w, label, _a in ev.ACTIONS]
 _CHANNELS = [f"ch{c}" for c in range(1, ev.MAX_CHANNEL + 1)]
 
@@ -322,21 +352,28 @@ def _cond_show(prefix: str) -> None:
     kind = next(k for k, v in ev.COND_LABELS.items() if v == label)
     dpg.configure_item(f"{prefix}_a", show=kind not in ev.ZONES)
     dpg.configure_item(f"{prefix}_b", show=kind in ("near", "range"),
-                       label="high end (us)" if kind == "range" else "+/- us (0 = deadband)")
+                       label="high end (us)" if kind == "range" else
+                       "+/- us (0 = button.deadband)" if prefix == "be_c" else "+/- us (0 = deadband)")
     dpg.configure_item(f"{prefix}_a", label="low end (us)" if kind == "range" else "us")
     _preview()
 
 
 def _cond_widgets(prefix: str) -> None:
-    """Channel, condition and value(s), with Learn and the channel's live value."""
+    """Channel, condition and value(s), with Learn (Capture in the button editor) and the
+    channel's live value."""
+    capture = _LEARN_LABELS[prefix] == "Capture"
     with dpg.group(horizontal=True):
         dpg.add_combo(_CHANNELS, tag=f"{prefix}_ch", width=70, default_value="ch1",
                       callback=lambda: _preview())
         dpg.add_combo(list(ev.COND_LABELS.values()), tag=f"{prefix}_kind", width=210,
                       default_value=ev.COND_LABELS["high"], callback=lambda: _cond_show(prefix))
-        dpg.add_button(label="Learn", tag=f"{prefix}_learn", callback=lambda: _learn_start(prefix))
+        dpg.add_button(label=_LEARN_LABELS[prefix], tag=f"{prefix}_learn",
+                       callback=lambda: _capture(prefix) if capture else _learn_start(prefix))
         with dpg.tooltip(dpg.last_item()):
-            dpg.add_text("Press, then within 4 s move the switch or stick to where it should\n"
+            dpg.add_text("Hold the transmitter button, then press Capture: takes the channel that\n"
+                         "moved since this editor opened, and its value. (Or press Capture first,\n"
+                         "then hold the button until it finishes.)" if capture else
+                         "Press, then within 4 s move the switch or stick to where it should\n"
                          "trigger and leave it there. Picks the channel that moved most.")
     with dpg.group(horizontal=True):
         dpg.add_input_int(tag=f"{prefix}_a", width=110, default_value=1500, min_value=ev.US_MIN,
@@ -354,8 +391,11 @@ def _rule_from_editor() -> ev.Rule:
     t = ev.Trigger(src)
     mods = [dpg.get_item_label(f"re_mod_{i}") for i in range(MAX_MODIFIERS)
             if dpg.is_item_shown(f"re_mod_{i}") and dpg.get_value(f"re_mod_{i}")]
-    if src == "pad":
-        t.button = int(dpg.get_value("re_button"))
+    if src in _BUTTONS:
+        if src == "pad":
+            t.button = int(dpg.get_value("re_button"))
+        else:
+            t.name = dpg.get_value("re_name") or ""
         t.gesture = dpg.get_value("re_gesture")
         t.mods = mods
     elif src == "channel":
@@ -379,7 +419,9 @@ def _rule_from_editor() -> ev.Rule:
             if kind == "wav":
                 arg = re.match(r"\s*(\d*)", arg).group(1)
         actions.append(ev.join_action(word, arg))
-    when_mods = [] if src == "pad" else mods
+    if dpg.get_value("re_cycle") and actions:
+        actions = [ev.format_cycle(actions)]
+    when_mods = [] if src in _BUTTONS else mods
     when_modes = [m for m in ev.MODES if dpg.get_value(f"re_when_{m}")]
     if len(when_modes) == len(ev.MODES):
         when_modes = []
@@ -397,7 +439,9 @@ def _preview(*_args) -> None:
     src = _SOURCE_KEYS[_SOURCES.index(dpg.get_value("re_source"))]
     for key in _SOURCE_KEYS:
         dpg.configure_item(f"re_grp_{key}", show=key == src)
-    dpg.set_value("re_mods_label", "Only while these modifiers are held:" if src == "pad"
+    dpg.configure_item("re_grp_button", show=src in _BUTTONS)
+    dpg.configure_item("re_nonamed", show=src == "named" and not dpg.get_item_configuration("re_name")["items"])
+    dpg.set_value("re_mods_label", "Only while these modifiers are held (a bank):" if src in _BUTTONS
                   else "Only while held (when=):")
     for i in range(ev.MAX_ACTIONS):
         label = dpg.get_value(f"re_act_{i}")
@@ -414,11 +458,13 @@ def _preview(*_args) -> None:
         if not rule.actions:
             text += "      <- pick at least one action"
         dpg.set_value("re_preview", text)
+        cycle = any(ev.is_cycle(a) for a in rule.actions)
         dpg.set_value("re_words", f"When {rule.trigger.describe()}"
                       + (f" ({rule.describe_when()})" if rule.describe_when() else "")
                       + ": " + (", ".join(ev.describe_action(a) for a in rule.actions) or "-")
                       + ("\nState rule: also applied at power-up and when the link returns."
-                         if rule.is_state_rule() else ""))
+                         if rule.is_state_rule() else "")
+                      + ("\nIt starts at the first at power-up and on every reload." if cycle else ""))
     except (ValueError, StopIteration) as e:
         dpg.set_value("re_preview", f"? {e}")
 
@@ -441,17 +487,20 @@ def _open_rule_editor(line_no: int | None) -> None:
     _edit_line = line_no
     with S.lock:
         names = S.doc.modifier_names()[:MAX_MODIFIERS]
+        buttons = S.doc.button_names()
         l = S.doc.rule_at(line_no) if line_no else None
     rule = l.rule if l is not None and l.rule is not None else ev.Rule(ev.Trigger("pad"), ["seq:wave"])
     t = rule.trigger
     dpg.set_value("re_source", _SOURCES[_SOURCE_KEYS.index(t.source)])
     dpg.set_value("re_button", str(t.button))
+    dpg.configure_item("re_name", items=buttons)
+    dpg.set_value("re_name", t.name or (buttons[0] if buttons else ""))
     dpg.set_value("re_gesture", t.gesture)
     _cond_set("re_c", t.cond)
     dpg.set_value("re_exit", t.exit)
     dpg.set_value("re_link", t.link)
     dpg.set_value("re_mode", t.mode)
-    held = set(t.mods if t.source == "pad" else rule.when_mods)
+    held = set(t.mods if t.source in _BUTTONS else rule.when_mods)
     for i in range(MAX_MODIFIERS):
         shown = i < len(names)
         dpg.configure_item(f"re_mod_{i}", show=shown, label=names[i] if shown else "")
@@ -459,9 +508,12 @@ def _open_rule_editor(line_no: int | None) -> None:
     dpg.configure_item("re_nomods", show=not names)
     for m in ev.MODES:
         dpg.set_value(f"re_when_{m}", m in rule.when_modes)
+    items = ev.cycle_items(rule.actions[0]) if len(rule.actions) == 1 else None
+    dpg.set_value("re_cycle", items is not None)
+    actions = items or rule.actions
     for i in range(ev.MAX_ACTIONS):
-        if i < len(rule.actions):
-            word, arg = ev.split_action(rule.actions[i])
+        if i < len(actions):
+            word, arg = ev.split_action(actions[i])
             dpg.set_value(f"re_act_{i}", ev.ACTION_LABEL.get(word, "(none)"))
             choices = _arg_choices(ev.ACTION_ARG.get(word))
             match = next((c for c in choices if c == arg or c.split()[0] == arg), None) if arg else None
@@ -479,6 +531,11 @@ def _rule_ok() -> None:
     if not rule.actions:
         _set_status("Pick at least one action")
         return
+    try:
+        ev.Rule.parse(rule.trigger.text(), rule.value_text())    # a cycle of one, no button name ...
+    except ev.EventsError as e:
+        _set_status(f"Can't use this rule: {e}")
+        return
     with S.lock:
         S.doc.set_rule(_edit_line, rule)
     dpg.configure_item("rule_editor", show=False)
@@ -490,20 +547,27 @@ def _rule_test() -> None:
 
 
 def _build_rule_editor() -> None:
-    with dpg.window(tag="rule_editor", label="Rule", modal=True, show=False, width=640, height=470,
+    with dpg.window(tag="rule_editor", label="Rule", modal=True, show=False, width=720, height=500,
                     on_close=lambda: _learn_stop()):
         dpg.add_text("When", color=COL_HEAD)
         dpg.add_radio_button(_SOURCES, tag="re_source", horizontal=True, default_value=_SOURCES[0],
                              callback=_preview)
-        with dpg.group(tag="re_grp_pad"):
-            with dpg.group(horizontal=True):
+        with dpg.group(tag="re_grp_button", horizontal=True):
+            with dpg.group(tag="re_grp_pad", horizontal=True):
                 dpg.add_text("button")
                 dpg.add_combo([str(b) for b in range(1, ev.MAX_BUTTON + 1)], tag="re_button", width=60,
                               default_value="1", callback=_preview)
-                dpg.add_text("is")
-                dpg.add_combo(ev.GESTURES, tag="re_gesture", width=90, default_value="click",
-                              callback=_preview)
-                dpg.add_text("", tag="re_pad_live", color=COL_DIM)
+            with dpg.group(tag="re_grp_named", horizontal=True, show=False):
+                dpg.add_text("button")
+                dpg.add_combo([], tag="re_name", width=150, callback=_preview)
+            dpg.add_text("is")
+            dpg.add_combo(ev.GESTURES, tag="re_gesture", width=90, default_value="click",
+                          callback=_preview)
+            with dpg.tooltip(dpg.last_item()):
+                dpg.add_text("press: at once; click: let go (waits for a double if there is one);\n"
+                             "double / triple; long: held; release: let go after any press")
+            dpg.add_text("", tag="re_pad_live", color=COL_DIM)
+        dpg.add_text("(no buttons defined - see the Buttons tab)", tag="re_nonamed", show=False, color=COL_DIM)
         with dpg.group(tag="re_grp_channel", show=False):
             _cond_widgets("re_c")
             dpg.add_checkbox(label="fire when it LEAVES this position instead (.exit)", tag="re_exit",
@@ -535,64 +599,83 @@ def _build_rule_editor() -> None:
                 dpg.add_combo([], tag=f"re_argc_{i}", width=300, show=False, callback=_preview)
                 dpg.add_input_text(tag=f"re_argt_{i}", width=300, show=False, hint="name",
                                    callback=_preview)
+        dpg.add_checkbox(label="take turns: each time, the next of these (cycle)", tag="re_cycle",
+                         callback=_preview)
+        with dpg.tooltip(dpg.last_item()):
+            dpg.add_text("cycle(A, B[, C]): 2 or 3 actions; each time the rule fires it runs the next\n"
+                         "one, wrapping (Orchestron 2.36.0+). Never a state rule.")
 
         dpg.add_separator()
-        dpg.add_text("", tag="re_words", wrap=600)
+        dpg.add_text("", tag="re_words", wrap=680)
         dpg.add_text("", tag="re_preview", color=COL_DIM)
         with dpg.group(horizontal=True):
             dpg.add_button(label="OK", width=100, callback=_rule_ok)
             dpg.add_button(label="Test now", width=100, callback=_rule_test, tag="re_test")
             with dpg.tooltip(dpg.last_item()):
-                dpg.add_text("Runs the actions on the robot now (the rule isn't saved).")
+                dpg.add_text("Runs the actions on the robot now (the rule isn't saved).\n"
+                             "A cycle runs its next action, each Test the next one.")
             dpg.add_button(label="Cancel", width=100,
                            callback=lambda: (_learn_stop(), dpg.configure_item("rule_editor", show=False)))
 
 
 # --------------------------------------------------------------------------- #
-# Modifier editor, raw line editor
+# Modifier and button editors, raw line editor
 # --------------------------------------------------------------------------- #
-def _open_mod_editor(line_no: int | None) -> None:
-    global _edit_mod_line
-    _edit_mod_line = line_no
-    with S.lock:
-        mods = {n: (name, c) for n, name, c, _e in S.doc.modifiers()}
-    name, cond = mods.get(line_no, ("", None)) if line_no else ("", None)
-    dpg.set_value("me_name", name)
-    _cond_set("me_c", cond or ev.Condition(1, "high"))
-    dpg.configure_item("mod_editor", show=True)
+# Editor prefix -> (section, window, a new line's condition)
+_NAMED = {"me": ("modifiers", "mod_editor", ev.Condition(1, "high")),
+          "be": ("buttons", "btn_editor", ev.Condition(1, "near", 1500))}
+_edit_named: dict[str, int | None] = {"me": None, "be": None}   # line being edited, None = new
 
 
-def _mod_ok() -> None:
-    name = (dpg.get_value("me_name") or "").strip()
-    # As the firmware: refused only if it reads as a trigger (ch5, button3, pad, mode, link);
-    # "chin" or "modest" are fine (Orchestron 2.33)
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,15}", name) or \
-            re.fullmatch(r"(ch|button|pad|mode|link)(\d.*)?", name, re.IGNORECASE):
-        dpg.set_value("me_err", "A name of letters/digits (up to 16) that doesn't read as a trigger "
-                      "(ch5, button3, pad, mode, link)")
-        return
+def _open_named_editor(p: str, line_no: int | None) -> None:
+    section, window, new = _NAMED[p]
+    _edit_named[p] = line_no
     with S.lock:
-        S.doc.set_modifier(_edit_mod_line, name, _cond_get("me_c"))
-    _learn_stop()
-    dpg.configure_item("mod_editor", show=False)
+        rows = {n: (name, c) for n, name, c, _e in S.doc.named(section)}
+        S.capture_base = list(S.inputs[2]) if S.inputs else None   # Capture: what moved since now
+    name, cond = rows.get(line_no, ("", None)) if line_no else ("", None)
+    dpg.set_value(f"{p}_name", name)
+    _cond_set(f"{p}_c", cond or new)
+    dpg.set_value(f"{p}_err", "")
+    dpg.configure_item(window, show=True)
+
+
+def _named_ok(p: str) -> None:
+    section, window, _new = _NAMED[p]
+    name = (dpg.get_value(f"{p}_name") or "").strip()
+    with S.lock:
+        err = S.doc.name_problem(name, section, _edit_named[p])
+        if err:
+            dpg.set_value(f"{p}_err", err)
+            return
+        n = S.doc.set_named(section, _edit_named[p], name, _cond_get(f"{p}_c"))
+        _edit_named[p] = n
+        # What the robot would refuse it for: the pad's channel, too many ... The line is kept,
+        # as the raw editor keeps a bad line: fix it here, or Cancel and see it in red
+        err = next((e for m, _nm, _c, e in S.doc.named(section) if m == n), "")
     _changed()
+    if err:
+        dpg.set_value(f"{p}_err", err)
+        return
+    _learn_stop()
+    dpg.configure_item(window, show=False)
 
 
-def _build_mod_editor() -> None:
-    with dpg.window(tag="mod_editor", label="Modifier", modal=True, show=False, width=520, height=300,
+def _build_named_editor(p: str, title: str, intro: str, held: str) -> None:
+    _section, window, _new = _NAMED[p]
+    with dpg.window(tag=window, label=title, modal=True, show=False, width=560, height=320,
                     on_close=lambda: _learn_stop()):
-        dpg.add_text("A modifier is a switch or stick position that other rules can require\n"
-                     "(\"shift + pad button 1\", or when=shift).", color=COL_DIM)
+        dpg.add_text(intro, color=COL_DIM)
         with dpg.group(horizontal=True):
             dpg.add_text("name")
-            dpg.add_input_text(tag="me_name", width=160)
-        dpg.add_text("is held while", color=COL_HEAD)
-        _cond_widgets("me_c")
-        dpg.add_text("", tag="me_err", color=COL_BAD)
+            dpg.add_input_text(tag=f"{p}_name", width=160, hint="letters, digits, _")
+        dpg.add_text(held, color=COL_HEAD)
+        _cond_widgets(f"{p}_c")
+        dpg.add_text("", tag=f"{p}_err", color=COL_BAD, wrap=520)
         with dpg.group(horizontal=True):
-            dpg.add_button(label="OK", width=100, callback=_mod_ok)
+            dpg.add_button(label="OK", width=100, callback=lambda: _named_ok(p))
             dpg.add_button(label="Cancel", width=100,
-                           callback=lambda: (_learn_stop(), dpg.configure_item("mod_editor", show=False)))
+                           callback=lambda: (_learn_stop(), dpg.configure_item(window, show=False)))
 
 
 def _open_raw_editor(line_no: int) -> None:
@@ -631,15 +714,17 @@ def _build_raw_editor() -> None:
 # --------------------------------------------------------------------------- #
 # Learn and live values
 # --------------------------------------------------------------------------- #
-def _learn_start(prefix: str) -> None:
+def _learn_start(prefix: str, min_move: int = LEARN_MOVE,
+                 msg: str = "Learn: move the switch or stick to where it should trigger, and leave it there ...") -> None:
     with S.lock:
         if S.inputs is None:
-            _set_status("Learn needs the robot connected (and its transmitter on)")
+            _set_status(f"{_LEARN_LABELS[prefix]} needs the robot connected (and its transmitter on)")
             return
         S.learn_base = list(S.inputs[2])
         S.learn_until = time.time() + LEARN_S
         S.learn_target = prefix
-    _set_status("Learn: move the switch or stick to where it should trigger, and leave it there ...")
+        S.learn_move = min_move
+    _set_status(msg)
 
 
 def _learn_stop() -> None:
@@ -650,25 +735,73 @@ def _learn_stop() -> None:
 
 def _learn_finish() -> None:
     with S.lock:
-        base, prefix = S.learn_base, S.learn_target
+        base, prefix, move = S.learn_base, S.learn_target, S.learn_move
         now = list(S.inputs[2]) if S.inputs else None
         S.learn_until, S.learn_base = 0.0, None
     if not base or not now:
         return
-    ch = ev.learn_channel(base, now)
+    ch = ev.learn_channel(base, now, move)
     if not ch:
-        _set_status("Learn: nothing moved - try again and move the control further")
+        _set_status(f"{_LEARN_LABELS[prefix]}: nothing moved - try again and move the control further")
+        return
+    if prefix == "be_c":
+        _capture_set(prefix, ch, now[ch - 1])
         return
     cond = ev.suggest_condition(ch, now[ch - 1])
     _cond_set(prefix, cond)
     _set_status(f"Learn: ch{ch} at {now[ch - 1]} us -> {cond.describe()}")
 
 
-def _update_live(inputs) -> None:
-    up, pad, us = inputs if inputs else (False, 0, [])
+def _capture(prefix: str) -> None:
+    """Capture (the button editor's Learn): the channel that moved since the editor opened, at
+    its value now - the user holds the transmitter button and presses Capture. If nothing has
+    moved yet, Learn: hold the button within 4 s."""
     with S.lock:
-        deadband = S.doc.deadband()
-    for prefix in ("re_c", "me_c"):
+        base = S.capture_base
+        now = list(S.inputs[2]) if S.inputs else None
+    ch = ev.learn_channel(base, now, CAPTURE_MOVE) if base and now else 0
+    if ch:
+        _capture_set(prefix, ch, now[ch - 1])
+        return
+    _learn_start(prefix, CAPTURE_MOVE, "Capture: hold the transmitter button now, until this finishes ...")
+
+
+def _capture_set(prefix: str, ch: int, us: int) -> None:
+    _cond_set(prefix, ev.Condition(ch, "near", us))
+    _set_status(f"Capture: ch{ch} at {us} us")
+
+
+def _button_bits() -> dict[int, int]:
+    """id(Line) -> its bit in <KI>'s buttons held: the [buttons] lines of the file the robot
+    loaded, in file order, without those it refused. Caller holds S.lock."""
+    loaded = [l for _n, l in sorted(S.synced.items())
+              if l.section == "buttons" and l.key and id(l) not in S.problems]
+    return {id(l): i for i, l in enumerate(loaded)}
+
+
+def _buttons_down(inputs) -> set[int]:
+    """id(Line) of the Buttons tab's rows that are down now: from the robot's <KI> for the lines
+    it loaded, else (firmware before 2.36, a line edited since) decided from the channel values."""
+    if not inputs or not inputs[0]:
+        return set()                     # link down: the robot ignores buttons
+    _up, _pad, us, held = inputs
+    with S.lock:
+        width = S.button_width
+        bits = _button_bits() if held is not None else {}
+    down = ev.buttons_down([(key, c) for key, _n, c in _btn_rows if c], us, width)
+    for key, bit in bits.items():
+        down.discard(key)
+        if held >> bit & 1:
+            down.add(key)
+    return down
+
+
+def _update_live(inputs) -> None:
+    up, pad, us, _held = inputs if inputs else (False, 0, [], None)
+    down = _buttons_down(inputs)
+    with S.lock:
+        deadband, width = S.doc.deadband(), S.button_width
+    for prefix in _LEARN_LABELS:
         if not dpg.does_item_exist(f"{prefix}_live"):
             continue
         ch = int(dpg.get_value(f"{prefix}_ch")[2:])
@@ -680,11 +813,24 @@ def _update_live(inputs) -> None:
         v = us[ch - 1]
         dpg.set_value(f"{prefix}_live", min(1.0, max(0.0, (v - 900) / 1200.0)))
         dpg.configure_item(f"{prefix}_live", overlay=f"ch{ch} now {v} us" + ("" if up else "  (link down)"))
-        met = _cond_get(prefix).holds(v, deadband)
-        dpg.set_value(f"{prefix}_met", "condition met" if met else "")
+        button = prefix == "be_c"
+        met = _cond_get(prefix).holds(v, width if button else deadband)
+        dpg.set_value(f"{prefix}_met", ("down" if button else "condition met") if met else "")
         dpg.configure_item(f"{prefix}_met", color=COL_OK)
     if dpg.does_item_exist("re_pad_live"):
-        dpg.set_value("re_pad_live", f"   (pad now: {'button ' + str(pad) if pad else 'none'})" if us else "")
+        live = f"pad now: {'button ' + str(pad) if pad else 'none'}"
+        if dpg.get_value("re_source") == _SOURCES[_SOURCE_KEYS.index("named")]:
+            name = dpg.get_value("re_name") or ""
+            live = f"{name} now: " + ("down" if any(k in down for k, n, _c in _btn_rows
+                                                    if n.lower() == name.lower()) else "up")
+        dpg.set_value("re_pad_live", f"   ({live})" if us else "")
+    if dpg.does_item_exist("ev_btns") and dpg.is_item_visible("ev_btns"):
+        dpg.set_value("ev_btn_width", f"A value counts within +/- {width} us (config.ini button.deadband)")
+        for key, _name, _c in _btn_rows:
+            tag = f"ev_btn_down_{key}"
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, "DOWN" if key in down else ("up" if us else ""))
+                dpg.configure_item(tag, color=COL_FIRED if key in down else COL_DIM)
     if dpg.does_item_exist("inputs_group") and dpg.is_item_visible("inputs_group"):
         for ch in range(1, ev.MAX_CHANNEL + 1):
             tag = f"in_bar_{ch}"
@@ -695,8 +841,10 @@ def _update_live(inputs) -> None:
             v = us[ch - 1]
             dpg.set_value(tag, min(1.0, max(0.0, (v - 900) / 1200.0)))
             dpg.configure_item(tag, overlay=f"ch{ch}  {v} us")
+        held = ", ".join(n for k, n, _c in _btn_rows if k in down)
         dpg.set_value("in_status", ("RC link up" if up else "RC link DOWN") +
-                      (f"   pad: button {pad}" if pad else "   pad: -") if us else "Not connected")
+                      (f"   pad: button {pad}" if pad else "   pad: -") +
+                      (f"   buttons: {held}" if held else "") if us else "Not connected")
 
 
 
@@ -1046,6 +1194,7 @@ def _rebuild() -> None:
         loose = list(S.loose_problems)
         supported, loaded = S.supported, S.loaded
     _rebuild_rules(doc, problems, loose, supported, loaded)
+    _rebuild_buttons(doc, problems)
     _rebuild_mods(doc, problems)
     _rebuild_presets(doc, problems)
     _rebuild_activities(doc, problems)
@@ -1070,6 +1219,7 @@ def _rebuild_rules(doc, problems, loose, supported, loaded) -> None:
         dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=100)
         dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=230)
         section_comment = ""
+        unknown = doc.rule_problems()          # buttons / modifiers the file doesn't define
         for n, l in doc.rules():
             # The comment line just above a rule is shown as its heading
             prev = doc.lines[n - 2].raw.strip() if n >= 2 else ""
@@ -1078,7 +1228,7 @@ def _rebuild_rules(doc, problems, loose, supported, loaded) -> None:
                 with dpg.table_row():
                     dpg.add_text("")
                     dpg.add_text(prev.lstrip(";# "), color=COL_HEAD)
-            problem = problems.get(id(l), "") or l.error
+            problem = problems.get(id(l), "") or l.error or unknown.get(n, "")
             with dpg.table_row():
                 dpg.add_text(str(n), color=COL_DIM)
                 if l.rule is None:
@@ -1134,7 +1284,49 @@ def _rebuild_mods(doc, problems) -> None:
                 with dpg.group(horizontal=True):
                     if cond:
                         dpg.add_button(label="Edit", small=True, user_data=n,
-                                       callback=lambda s, a, u: _open_mod_editor(u))
+                                       callback=lambda s, a, u: _open_named_editor("me", u))
+                    dpg.add_button(label="Delete", small=True, user_data=n, callback=lambda s, a, u: _delete(u))
+
+
+def _rebuild_buttons(doc, problems) -> None:
+    global _btn_rows
+    dpg.delete_item("ev_btns", children_only=True)
+    rows = doc.buttons()
+    _btn_rows = [(id(doc.lines[n - 1]), name, None if err else cond) for n, name, cond, err in rows]
+    pad = doc.pad_problem()
+    if pad:
+        dpg.add_text(f"[inputs] pad: {pad}", parent="ev_btns", color=COL_BAD, wrap=900)
+    if not rows:
+        dpg.add_text("No buttons yet.", parent="ev_btns", color=COL_DIM)
+        return
+    with dpg.table(parent="ev_btns", header_row=True, row_background=True, policy=dpg.mvTable_SizingStretchProp):
+        dpg.add_table_column(label="line", width_fixed=True, init_width_or_weight=40)
+        dpg.add_table_column(label="Name", init_width_or_weight=2)
+        dpg.add_table_column(label="Channel", init_width_or_weight=1)
+        dpg.add_table_column(label="Value", init_width_or_weight=2)
+        dpg.add_table_column(label="Now", width_fixed=True, init_width_or_weight=60)
+        dpg.add_table_column(label="", width_fixed=True, init_width_or_weight=120)
+        for n, name, cond, err in rows:
+            l = doc.lines[n - 1]
+            problem = problems.get(id(l), "") or err
+            channel, _sp, value = ev.strip_comment(l.value)[0].partition(" ")
+            with dpg.table_row():
+                dpg.add_text(str(n), color=COL_DIM)
+                dpg.add_text(name, color=COL_BAD if problem else COL_TEXT)
+                if problem:
+                    with dpg.tooltip(dpg.last_item()):
+                        dpg.add_text(problem, wrap=500)
+                dpg.add_text(channel)
+                dpg.add_text(value.strip())        # as written
+                if cond:
+                    with dpg.tooltip(dpg.last_item()):
+                        dpg.add_text("down while " + cond.describe() +
+                                     (" (+/- button.deadband)" if cond.kind == "near" and not cond.b else ""))
+                dpg.add_text("", tag=f"ev_btn_down_{id(l)}", color=COL_DIM)
+                with dpg.group(horizontal=True):
+                    if cond:
+                        dpg.add_button(label="Edit", small=True, user_data=n,
+                                       callback=lambda s, a, u: _open_named_editor("be", u))
                     dpg.add_button(label="Delete", small=True, user_data=n, callback=lambda s, a, u: _delete(u))
 
 
@@ -1258,8 +1450,19 @@ def build() -> None:
                 dpg.add_text("A row flashes when its rule fires on the robot.", color=COL_DIM)
             with dpg.child_window(border=False, height=-1):
                 dpg.add_group(tag="ev_rules")
+        with dpg.tab(label="Buttons"):
+            dpg.add_text("Named buttons (Orchestron firmware 2.36.0+): a button is a value on any channel, so "
+                         "one channel can carry several, like the pad (one down at a time). Rules use them as "
+                         "NAME (a click), NAME.press / .double / .triple / .long / .release; hold a modifier "
+                         "for another bank (bank2+NAME). To add one: Add button, hold the transmitter button, "
+                         "press Capture.", color=COL_DIM, wrap=900)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Add button", callback=lambda: _open_named_editor("be", None))
+                dpg.add_text("", tag="ev_btn_width", color=COL_DIM)
+            with dpg.child_window(border=False, height=-1):
+                dpg.add_group(tag="ev_btns")
         with dpg.tab(label="Modifiers"):
-            dpg.add_button(label="Add modifier", callback=lambda: _open_mod_editor(None))
+            dpg.add_button(label="Add modifier", callback=lambda: _open_named_editor("me", None))
             dpg.add_group(tag="ev_mods")
         with dpg.tab(label="Activities"):
             dpg.add_text("Things the droid does by itself while their conditions hold: random sounds, "
@@ -1289,7 +1492,9 @@ def build() -> None:
                 dpg.add_combo(["none"] + _CHANNELS, tag="ev_pad", width=120, default_value="none",
                               callback=_settings_changed)
             dpg.add_text("The deadband is how far either side of a value a rule such as \"ch13 at 1500 us\" "
-                         "still counts. The pad channel carries the 14-button pad.", color=COL_DIM, wrap=800)
+                         "still counts (named buttons use config.ini's button.deadband instead). The pad "
+                         "channel carries the 14-button pad; it can't also carry named buttons.",
+                         color=COL_DIM, wrap=800)
         with dpg.tab(label="Inputs", tag="ev_inputs_tab"):
             dpg.add_text("", tag="in_status")
             with dpg.group(tag="inputs_group"):
@@ -1301,7 +1506,10 @@ def build() -> None:
             dpg.add_input_text(tag="ev_text", multiline=True, width=-1, height=-1, tab_input=True)
 
     _build_rule_editor()
-    _build_mod_editor()
+    _build_named_editor("me", "Modifier", "A modifier is a switch or stick position that other rules can require\n"
+                        "(\"shift + pad button 1\", or when=shift). On a switch it's a bank.", "is held while")
+    _build_named_editor("be", "Button", "A button is down while its channel is at its value (+/- button.deadband).\n"
+                        "Hold the transmitter button and press Capture to take both.", "is down while")
     _build_raw_editor()
     _build_activity_editor()
 
@@ -1313,7 +1521,7 @@ def update() -> None:
         rebuild, S.need_rebuild = S.need_rebuild, False
         busy, note, dirty, supported, source = S.busy, S.note, S.dirty, S.supported, S.source
         inputs = S.inputs
-        learn_until = S.learn_until
+        learn_until, learn_target = S.learn_until, S.learn_target
         lines = []
         while S.notices:
             lines.append(S.notices.popleft())
@@ -1338,9 +1546,9 @@ def update() -> None:
         for key in [k for k, t in S.fired.items() if now - t >= FIRED_S]:
             del S.fired[key]
 
-    # Live values while an editor or the Inputs tab is open
+    # Live values while an editor, the Buttons or the Inputs tab is open
     want = dpg.is_item_shown("rule_editor") or dpg.is_item_shown("mod_editor") or \
-        dpg.is_item_visible("inputs_group")
+        dpg.is_item_shown("btn_editor") or dpg.is_item_visible("ev_btns") or dpg.is_item_visible("inputs_group")
     if want and polling:
         with S.lock:
             S.poll_pending = True
@@ -1350,11 +1558,8 @@ def update() -> None:
         _update_live(inputs)
     if learn_until and now >= learn_until:
         _learn_finish()
-    elif learn_until:
-        for prefix in ("re_c", "me_c"):
-            if dpg.does_item_exist(f"{prefix}_learn"):
-                dpg.configure_item(f"{prefix}_learn", label=f"Learning {learn_until - now:.0f}s")
-    else:
-        for prefix in ("re_c", "me_c"):
-            if dpg.does_item_exist(f"{prefix}_learn"):
-                dpg.configure_item(f"{prefix}_learn", label="Learn")
+    for prefix, label in _LEARN_LABELS.items():
+        if dpg.does_item_exist(f"{prefix}_learn"):
+            busy = learn_until > now and prefix == learn_target
+            dpg.configure_item(f"{prefix}_learn", label=f"{label.rstrip('e')}ing {learn_until - now:.0f}s"
+                               if busy else label)

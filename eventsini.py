@@ -1,11 +1,14 @@
-"""events.ini as an editable document (Orchestron 2.30+; activities 2.32+), no UI and no I/O.
+"""events.ini as an editable document (Orchestron 2.30+; activities 2.32+; named buttons and
+cycle() 2.36+), no UI and no I/O.
 
 The firmware's events.ini says what every transmitter control does: one rule per line,
 
     trigger = action[, action[, action]] [when=...]
+    trigger = cycle(action, action[, action]) [when=...]
 
-in an [events] section, plus [settings], [inputs], [modifiers] and [preset.NAME]
-sections (see Orchestron docs/examples/events.ini and src/ButtonBindings.hpp).
+in an [events] section, plus [settings], [inputs], [buttons], [modifiers] and [preset.NAME]
+sections (see Orchestron docs/examples/events.ini, src/EventRules.hpp and
+docs/BUTTON_TRIGGERS.md section 5).
 
 EventsDoc keeps the file as a list of lines so a load / edit / save round trip
 changes only the lines that were edited: comments, blank lines and the order stay
@@ -21,12 +24,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-GESTURES = ["click", "press", "double", "triple", "long"]   # click is the default
+GESTURES = ["click", "press", "double", "triple", "long", "release"]   # click is the default
 MODES = ["idle", "manual", "control", "auto"]
 ZONES = ["low", "mid", "high"]
 MAX_CHANNEL = 24
-MAX_BUTTON = 14
+MAX_BUTTON = 14              # pad buttons; also the most [buttons] on one channel
+MAX_BUTTONS = 32             # [buttons] lines in all
+MAX_BUTTON_CHANNELS = 8      # channels that carry [buttons]
+MAX_MODIFIERS = 8
 MAX_ACTIONS = 3
+NAME_LEN = 15                # [modifiers] and [buttons] names
+
+# config.ini settings that turn button.deadband (SBUS units) into microseconds, with the
+# firmware's defaults
+BUTTON_WIDTH_KEYS = {"button.deadband": 20, "rc.pwm.minUs": 1000, "rc.pwm.maxUs": 2000,
+                     "rc.sbus.min": 172, "rc.sbus.max": 1811}
 
 # Condition kinds, in the order the editor offers them
 COND_KINDS = ["low", "mid", "high", "near", "above", "below", "range"]
@@ -215,23 +227,71 @@ def learn_channel(before: list[int], after: list[int], min_move: int = 150) -> i
 
 
 # --------------------------------------------------------------------------- #
+# Names, and [buttons] (Orchestron 2.36.0+)
+# --------------------------------------------------------------------------- #
+_TRIGGER_WORD = re.compile(r"(ch|button|pad|mode|link)(?:$|[.\d])", re.IGNORECASE)
+
+
+def name_error(name: str, what: str, plain: bool = False) -> str:
+    """Why a [modifiers] / [buttons] name is refused, "" if it isn't: 1-15 characters and not
+    read as a trigger (ch5, button3, pad, mode, link; "chin" or "modest" are fine), as the
+    firmware's LooksLikeTrigger. plain: also only letters, digits and _ (the firmware asks it
+    of buttons; the editor writes no other names)."""
+    if not 1 <= len(name) <= NAME_LEN:
+        return f"{what} name must be 1-{NAME_LEN} characters: {name}"
+    if _TRIGGER_WORD.match(name):
+        return f"{what} name reads as a trigger (chN, buttonN, pad, mode, link): {name}"
+    if plain and not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        return f"{what} names are letters, digits and _: {name}"
+    return ""
+
+
+def button_width_us(settings: dict[str, int] | None = None) -> int:
+    """config.ini's button.deadband (SBUS units) in microseconds: how far either side of a
+    [buttons] value without its own ~W the channel may be, as the firmware converts it.
+    settings: config values by key; missing ones take the firmware's defaults (20 -> 12 us)."""
+    s = {**BUTTON_WIDTH_KEYS, **(settings or {})}
+    span = s["rc.sbus.max"] - s["rc.sbus.min"]
+    if span <= 0:
+        return 1
+    return max(1, int(s["button.deadband"] * (s["rc.pwm.maxUs"] - s["rc.pwm.minUs"]) / span + 0.5))
+
+
+def buttons_down(buttons: list[tuple[object, Condition]], us: list[int], width: int) -> set:
+    """The [buttons] down for these channel values (us[0] = ch1), decided here for firmware
+    that doesn't report them: on each channel the first button whose condition holds, as the
+    firmware (one at a time per channel, like the pad). buttons: (key, condition) in file
+    order, the key whatever the caller wants back; width: button.deadband in us."""
+    down, taken = set(), set()
+    for key, cond in buttons:
+        ch = cond.channel
+        if ch in taken or ch > len(us) or not cond.holds(us[ch - 1], width):
+            continue
+        down.add(key)
+        taken.add(ch)
+    return down
+
+
+# --------------------------------------------------------------------------- #
 # Triggers and rules
 # --------------------------------------------------------------------------- #
 @dataclass
 class Trigger:
-    source: str = "pad"           # pad | channel | link | mode
+    source: str = "pad"           # pad | named | channel | link | mode
     button: int = 1               # pad
-    gesture: str = "click"        # pad
-    mods: list[str] = field(default_factory=list)   # pad: modifier prefixes ("shift+pad.1")
+    gesture: str = "click"        # pad, named
+    mods: list[str] = field(default_factory=list)   # pad, named: modifier prefixes ("shift+pad.1")
     cond: Condition = field(default_factory=Condition)   # channel
     exit: bool = False            # channel: fire on leaving
     link: str = "lost"            # link: lost | up
     mode: str = "idle"            # mode
+    name: str = ""                # named: a [buttons] name ("dome.long")
 
     def text(self) -> str:
-        if self.source == "pad":
+        if self.source in ("pad", "named"):
             g = "" if self.gesture == "click" else f".{self.gesture}"
-            return "".join(m + "+" for m in self.mods) + f"pad.{self.button}{g}"
+            button = f"pad.{self.button}" if self.source == "pad" else self.name
+            return "".join(m + "+" for m in self.mods) + button + g
         if self.source == "channel":
             return self.cond.text() + (".exit" if self.exit else "")
         if self.source == "link":
@@ -239,9 +299,10 @@ class Trigger:
         return f"mode.{self.mode}"
 
     def describe(self) -> str:
-        if self.source == "pad":
+        if self.source in ("pad", "named"):
             held = "".join(f"{m} + " for m in self.mods)
-            return f"{held}pad button {self.button} {self.gesture}"
+            button = f"pad button {self.button}" if self.source == "pad" else f"{self.name} button"
+            return f"{held}{button} {self.gesture}"
         if self.source == "channel":
             return (("leaves " if self.exit else "") + self.cond.describe())
         if self.source == "link":
@@ -262,22 +323,26 @@ class Trigger:
             exit_ = low.endswith(".exit")
             body = k[:-5] if exit_ else k
             return Trigger("channel", cond=Condition.parse(body), exit=exit_)
-        # [mod+[mod+]]pad.N[.gesture]
+        # [mod+[mod+]]pad.N[.gesture] or [mod+[mod+]]NAME[.gesture] (a [buttons] button: whether
+        # the file has one by that name is EventsDoc.rule_problems()'s job)
         parts = [p.strip() for p in k.split("+")]
         mods, last = parts[:-1], parts[-1]
         old = re.fullmatch(r"button(\d+)(\.\w+)?", last, re.IGNORECASE)
         if old:
             raise EventsError(f"write 'pad.{old.group(1)}{old.group(2) or ''}', not '{last}' "
                               "(the buttons.ini form; Orchestron 2.33 refuses it)")
-        m = re.fullmatch(r"pad\.(\d+)(?:\.(\w+))?", last, re.IGNORECASE)
-        if not m:
+        pad = re.fullmatch(r"pad\.(\d+)(?:\.(\w+))?", last, re.IGNORECASE)
+        m = pad or re.fullmatch(r"([A-Za-z0-9_]+)(?:\.(\w+))?", last)
+        if not m or (not pad and _TRIGGER_WORD.match(m.group(1))):
             raise EventsError(f"unknown trigger: {k}")
-        button = _int(m.group(1), 1, MAX_BUTTON, "pad button")
         gesture = (m.group(2) or "click").lower()
         if gesture not in GESTURES:
             raise EventsError(f"gesture must be one of {', '.join(GESTURES)}: {k}")
         if any(not x for x in mods):
             raise EventsError(f"empty modifier name: {k}")
+        if not pad:
+            return Trigger("named", name=m.group(1), gesture=gesture, mods=mods)
+        button = _int(m.group(1), 1, MAX_BUTTON, "pad button")
         return Trigger("pad", button=button, gesture=gesture, mods=mods)
 
 
@@ -298,7 +363,77 @@ def join_action(word: str, arg: str = "") -> str:
     return f"{word}:{arg.strip()}" if ACTION_ARG.get(word) else word
 
 
+def _split_top(text: str) -> list[str]:
+    """Split on the commas outside brackets, each part trimmed (empty ones too)."""
+    parts, depth, start = [], 0, 0
+    for i, c in enumerate(text):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif c == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def split_actions(text: str) -> list[str]:
+    """'seq:a, home' -> ['seq:a', 'home']: a rule's actions, as the firmware splits them on
+    commas, except that cycle(...) keeps the commas inside its brackets."""
+    return [a for a in _split_top(text) if a]
+
+
+def is_cycle(text: str) -> bool:
+    return text.strip().lower().startswith("cycle(")
+
+
+def cycle_items(text: str) -> list[str] | None:
+    """'cycle(seq:a, seq:b)' -> ['seq:a', 'seq:b'], None if the action isn't a cycle. Each time
+    its rule fires it runs the next item, wrapping (Orchestron 2.36.0+). Raises EventsError for
+    a bad one: 2 or 3 items (a line's action limit), each one action, not another cycle."""
+    t = text.strip()
+    if not is_cycle(t):
+        return None
+    depth, close = 0, -1
+    for i, c in enumerate(t[5:], 5):
+        depth += {"(": 1, ")": -1}.get(c, 0)
+        if depth == 0:
+            close = i
+            break
+    if close < 0:
+        raise EventsError(f"cycle( needs a closing ): {t}")
+    if t[close + 1:].strip():
+        raise EventsError(f"cycle(...) must be the line's only action: {t}")
+    items = _split_top(t[6:close])
+    if any(not i for i in items):
+        raise EventsError(f"empty action in {t}")
+    if any(is_cycle(i) for i in items):
+        raise EventsError(f"a cycle can't hold another cycle: {t}")
+    if not 2 <= len(items) <= MAX_ACTIONS:
+        raise EventsError(f"a cycle holds 2 or 3 actions: {t}")
+    return items
+
+
+def format_cycle(items: list[str]) -> str:
+    return "cycle(" + ", ".join(i.strip() for i in items) + ")"
+
+
+def flat_actions(actions: list[str]) -> list[str]:
+    """A rule's single actions: a cycle's items in its place."""
+    out = []
+    for a in actions:
+        try:
+            out += cycle_items(a) or [a]
+        except EventsError:
+            out.append(a)
+    return out
+
+
 def describe_action(text: str) -> str:
+    items = cycle_items(text)
+    if items is not None:
+        return "Each time: the next of " + ", ".join(describe_action(i) for i in items)
     word, arg = split_action(text)
     if word == "audio":
         return {"random": "Random sounds on", "music": "Music on"}.get(arg.lower(), "Random sounds / music off")
@@ -342,7 +477,10 @@ class Rule:
         return ", ".join(parts)
 
     def is_state_rule(self) -> bool:
-        """mode:, audio:, preset: and set: rules also apply at power-up and link-up."""
+        """mode:, audio:, preset: and set: rules also apply at power-up and link-up; a cycle
+        line never does (re-applying it would step it)."""
+        if any(is_cycle(a) for a in self.actions):
+            return False
         return any(split_action(a)[0] in ("mode", "audio", "preset", "set") for a in self.actions)
 
     @staticmethod
@@ -353,10 +491,13 @@ class Rule:
         if m:
             when = body[m.end():].strip()
             body = body[:m.start()]
-        actions = [a.strip() for a in body.split(",") if a.strip()]
+        actions = split_actions(body)
         if len(actions) > MAX_ACTIONS:
             raise EventsError(f"at most {MAX_ACTIONS} actions per line")
-        for a in actions:
+        if len(actions) > 1 and any(is_cycle(a) for a in actions):
+            raise EventsError("cycle(...) must be the line's only action")
+        items = cycle_items(actions[0]) if len(actions) == 1 else None   # raises for a bad cycle
+        for a in items or actions:
             word = split_action(a)[0].lower()
             if word in ("random", "next"):
                 raise EventsError(f"write '{word}A:' (or '{word}B:'), not '{word}:' (Orchestron 2.33 refuses it)")
@@ -453,18 +594,106 @@ class EventsDoc:
         m = re.fullmatch(r"ch(\d+)", v)
         return int(m.group(1)) if m else 0
 
-    def modifiers(self) -> list[tuple[int, str, Condition | None, str]]:
-        """(line, name, condition or None, error) per [modifiers] line."""
-        out = []
-        for n, l in self.entries("modifiers"):
+    def _check_named(self) -> tuple[dict[int, tuple[Condition | None, str]], str]:
+        """Every [modifiers] and [buttons] line checked as the firmware loads them, in file
+        order: {line: (condition or None, problem)}, and the [inputs] pad line's problem. A line
+        the firmware refuses doesn't count for the names, limits and pad check of later lines."""
+        out: dict[int, tuple[Condition | None, str]] = {}
+        names: set[str] = set()
+        pad, pad_problem, mods = 0, "", 0
+        button_channels: list[int] = []          # per button loaded so far
+        for n, l in enumerate(self.lines, 1):
+            spec = strip_comment(l.value)[0]
+            if l.section == "inputs" and l.key.lower() == "pad":
+                m = re.fullmatch(r"ch(\d+)", spec.lower())
+                ch = int(m.group(1)) if m else 0
+                if ch in button_channels:
+                    pad_problem = f"ch{ch} carries [buttons]; it can't also be the pad ([inputs] pad)"
+                else:
+                    pad = ch
+                continue
+            if not l.key or l.section not in ("modifiers", "buttons"):
+                continue
+            what = l.section[:-1]
+            cond, err = None, name_error(l.key, what, plain=what == "button")
+            if not err and l.key.lower() in names:
+                err = f"name already used by a modifier or button: {l.key}"
             try:
-                out.append((n, l.key, Condition.parse(strip_comment(l.value)[0]), ""))
+                cond = Condition.parse(spec)
             except EventsError as e:
-                out.append((n, l.key, None, str(e)))
-        return out
+                err = err or str(e)
+            if not err and what == "modifier" and mods >= MAX_MODIFIERS:
+                err = f"too many modifiers (max {MAX_MODIFIERS})"
+            if not err and what == "button":
+                ch = cond.channel
+                if len(button_channels) >= MAX_BUTTONS:
+                    err = f"too many buttons (max {MAX_BUTTONS})"
+                elif ch == pad:
+                    err = f"ch{ch} is the pad ([inputs] pad); it can't also carry [buttons]"
+                elif button_channels.count(ch) >= MAX_BUTTON:
+                    err = f"a channel carries at most {MAX_BUTTON} buttons: ch{ch}"
+                elif ch not in button_channels and len(set(button_channels)) >= MAX_BUTTON_CHANNELS:
+                    err = f"buttons on at most {MAX_BUTTON_CHANNELS} channels: ch{ch}"
+            if not err:
+                names.add(l.key.lower())
+                if what == "modifier":
+                    mods += 1
+                else:
+                    button_channels.append(cond.channel)
+            out[n] = (cond, err)
+        return out, pad_problem
+
+    def named(self, section: str) -> list[tuple[int, str, Condition | None, str]]:
+        """(line, name, condition or None, problem) per [modifiers] or [buttons] line. The
+        condition is there whenever it reads, even on a line with a problem (a duplicate name,
+        too many, the pad's channel)."""
+        checked = self._check_named()[0]
+        return [(n, l.key, *checked[n]) for n, l in self.entries(section)]
+
+    def modifiers(self) -> list[tuple[int, str, Condition | None, str]]:
+        return self.named("modifiers")
 
     def modifier_names(self) -> list[str]:
         return [name for _n, name, _c, _e in self.modifiers()]
+
+    def buttons(self) -> list[tuple[int, str, Condition | None, str]]:
+        """[buttons] (Orchestron 2.36.0+): NAME = chN VALUE, down while the channel is within
+        config.ini's button.deadband of VALUE us (or VALUE~W, or any channel condition)."""
+        return self.named("buttons")
+
+    def button_names(self) -> list[str]:
+        return [name for _n, name, _c, _e in self.buttons()]
+
+    def pad_problem(self) -> str:
+        """Why the firmware refuses [inputs] pad: its channel already carries [buttons]."""
+        return self._check_named()[1]
+
+    def name_problem(self, name: str, section: str, line_no: int | None = None) -> str:
+        """Why the editor can't give the [modifiers] / [buttons] line at line_no (None: a new
+        one) this name: name_error(), or another modifier or button has it."""
+        err = name_error(name, section[:-1], plain=True)
+        for n, l in self.entries("modifiers") + self.entries("buttons"):
+            if not err and n != line_no and l.key.lower() == name.lower():
+                err = f"{l.key} is already a {l.section[:-1]} (line {n})"
+        return err
+
+    def rule_problems(self) -> dict[int, str]:
+        """{line: problem} for the [events] rules that name a button or modifier the file
+        doesn't define (or whose line the firmware refuses), as the firmware reports them."""
+        checked = self._check_named()[0]
+        known = {s: {l.key.lower() for n, l in self.entries(s) if not checked[n][1]}
+                 for s in ("modifiers", "buttons")}
+        out = {}
+        for n, l in self.rules():
+            if l.rule is None:
+                continue
+            t = l.rule.trigger
+            missing = [m for m in t.mods + l.rule.when_mods if m.lower() not in known["modifiers"]]
+            if t.source == "named" and t.name.lower() not in known["buttons"]:
+                out[n] = f"no [buttons] line named {t.name}"
+            elif missing:
+                out[n] = f"unknown modifier (define it in [modifiers]): {missing[0]}"
+        return out
 
     def presets(self) -> dict[str, list[tuple[str, str]]]:
         """{name: [(setting, value), ...]} from the [preset.NAME] sections, in file order."""
@@ -477,10 +706,10 @@ class EventsDoc:
         return out
 
     def sequence_names(self) -> list[str]:
-        """Sequences the rules and activities name (seq: / toggle: / pick(...))."""
+        """Sequences the rules and activities name (seq: / toggle: / cycle(...) / pick(...))."""
         names: list[str] = []
         for _n, l in self.rules():
-            for a in (l.rule.actions if l.rule else []):
+            for a in flat_actions(l.rule.actions if l.rule else []):
                 word, arg = split_action(a)
                 if word in ("seq", "toggle") and arg and arg not in names:
                     names.append(arg)
@@ -532,12 +761,17 @@ class EventsDoc:
         return None
 
     # -- editing ------------------------------------------------------------ #
-    def _section_end(self, section: str, create_header: str) -> int:
-        """Index to insert a new line at the end of a section (created at the end of the
-        file if it's missing). Trailing blank lines stay after the insert."""
+    def _section_end(self, section: str, create_header: str, before: tuple[str, ...] = ()) -> int:
+        """Index to insert a new line at the end of a section. A missing section is created
+        just above the first of the `before` sections, or else at the end of the file.
+        Trailing blank lines stay after the insert."""
         s = section.lower()
         idx = [i for i, l in enumerate(self.lines) if l.section == s]
         if not idx:
+            at = next((i for i, l in enumerate(self.lines) if l.section in before), None)
+            if at is not None:
+                self.lines[at:at] = [Line(create_header, s), Line("", s)]
+                return at + 1
             if self.lines and self.lines[-1].raw.strip():
                 self.lines.append(Line(""))
             self.lines.append(Line(create_header, s))
@@ -547,8 +781,8 @@ class EventsDoc:
             end -= 1
         return end
 
-    def _insert(self, section: str, header: str, raw: str) -> int:
-        at = self._section_end(section, header)
+    def _insert(self, section: str, header: str, raw: str, before: tuple[str, ...] = ()) -> int:
+        at = self._section_end(section, header, before)
         self.lines.insert(at, _parse_line(raw, section.lower()))
         return at + 1
 
@@ -579,13 +813,23 @@ class EventsDoc:
                 return n
         return self._insert(section, header, f"{key} = {value}")
 
-    def set_modifier(self, line_no: int | None, name: str, cond: Condition) -> int:
+    def set_named(self, section: str, line_no: int | None, name: str, cond: Condition) -> int:
+        """Replace the [modifiers] / [buttons] line at line_no (keeping its comment), or add one
+        (a new [buttons] section goes above [modifiers] or [events]); returns its line."""
         raw = f"{name} = {cond.text()}"
-        if line_no and 1 <= line_no <= len(self.lines) and self.lines[line_no - 1].section == "modifiers":
+        if line_no and 1 <= line_no <= len(self.lines) and self.lines[line_no - 1].section == section:
             _v, comment = strip_comment(self.lines[line_no - 1].value)
-            self.lines[line_no - 1] = _parse_line(raw + (f"   {comment}" if comment else ""), "modifiers")
+            self.lines[line_no - 1] = _parse_line(raw + (f"   {comment}" if comment else ""), section)
             return line_no
-        return self._insert("modifiers", "[modifiers]", raw)
+        return self._insert(section, f"[{section}]", raw, ("modifiers", "events") if section == "buttons" else ())
+
+    def set_modifier(self, line_no: int | None, name: str, cond: Condition) -> int:
+        return self.set_named("modifiers", line_no, name, cond)
+
+    def set_button(self, line_no: int | None, name: str, cond: Condition) -> int:
+        """A [buttons] line, NAME = chN VALUE: a "near" condition whose width 0 means
+        config.ini's button.deadband (or any other condition)."""
+        return self.set_named("buttons", line_no, name, cond)
 
     def _replace_section(self, section: str, header: str, entries: list[tuple[str, str]], width: int) -> None:
         """Replace a section's key = value lines. Comment lines stay, and a key that is

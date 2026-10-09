@@ -24,6 +24,7 @@ class FakeOrchestron(Transport):
         self.files: dict[str, bytes] = {"events.ini": b"[events]\r\npad.1 = seq:wave\r\n" * 10}
         self.upload: tuple[str, int, bytearray] | None = None
         self.problems = [(3, "ch9 sideways: expected low, mid, high")]
+        self.buttons_held: int | None = None     # 2.36.0+: <KI>'s last field (None: older firmware)
         self.notices = False
         self.corrupt_next_chunk = False
         self.longest = 0
@@ -48,7 +49,8 @@ class FakeOrchestron(Transport):
             return                                   # dropped, as SerialPacket does
         op, args = body[:3], body[4:] if len(body) > 3 and body[3] == "," else ""
         if body == "KI":
-            self.reply("KI,1,0," + ",".join(["1500"] * 12 + ["1000"] + ["1500"] * 11))
+            held = "" if self.buttons_held is None else f",{self.buttons_held}"
+            self.reply("KI,1,0," + ",".join(["1500"] * 12 + ["1000"] + ["1500"] * 11) + held)
         elif body == "KFL":
             self.reply("KFL,2")
         elif body.startswith("KFL"):
@@ -149,6 +151,15 @@ class ClientFileTests(unittest.TestCase):
         t.reply("KV,20")                              # unsolicited: not taken as a reply
         self.assertEqual(fired, [20])
         self.assertEqual(bot.events_report()[0], 7)
+
+    def test_inputs_buttons_held(self):
+        bot, t = make()
+        self.assertEqual(bot.inputs_and_buttons()[3], None)          # before 2.36: no last field
+        t.buttons_held = 0b100101                                    # 2.36.0: [buttons] 0, 2 and 5 held
+        up, pad, us, held = bot.inputs_and_buttons()
+        self.assertEqual((up, pad, len(us), us[12], held), (True, 0, 24, 1000, 37))
+        up, pad, us = bot.inputs()                                   # as before: 24 channels
+        self.assertEqual((len(us), us[23]), (24, 1500))
 
 
 if __name__ == "__main__":

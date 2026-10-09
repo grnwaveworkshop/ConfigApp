@@ -34,6 +34,7 @@ FILE_ERRORS = {
     6: "writing the SD card failed (the old file was kept)",
 }
 WRITE_CHUNK = 28        # bytes per <KFW,hex>: the firmware reads at most 63 characters a frame
+KI_CHANNELS = 24        # channel values in a <KI> reply; 2.36.0+ sends the buttons held after them
 
 
 class RobotClient:
@@ -221,10 +222,19 @@ class RobotClient:
 
     def inputs(self) -> tuple[bool, int, list[int]]:
         """<KI> - (link up, pad button held 0-14, channels 1-24 in microseconds)."""
+        up, pad, us, _held = self.inputs_and_buttons()
+        return up, pad, us
+
+    def inputs_and_buttons(self) -> tuple[bool, int, list[int], int | None]:
+        """<KI> - as inputs(), then the named buttons held now (Orchestron 2.36.0+): a bitmask,
+        bit i = the i-th [buttons] line the robot loaded, in file order. None from older
+        firmware, which doesn't send it."""
         reply = self._file_request(f"{CATEGORY}I")
         if reply[0] != CATEGORY + "I" or len(reply) < 3:
             raise ProtocolError(f"bad <KI> reply: {reply}")
-        return reply[1] == "1", int(reply[2]), [int(v) for v in reply[3:]]
+        values = [int(v) for v in reply[3:]]
+        held = values[KI_CHANNELS] if len(values) > KI_CHANNELS else None
+        return reply[1] == "1", int(reply[2]), values[:KI_CHANNELS], held
 
     def wav_files(self) -> list[str]:
         """<KFL> + <KFL##> - the WAV files on the SD card (for wavA: / wavB: actions)."""

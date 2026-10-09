@@ -51,7 +51,7 @@ back), and connects again.
 Orchestron 2.31.0+ adds, for the Events tab:
 
 ```
-<KI>                  -> <KI,linkUp,pad,us1..us24>   inputs now (Learn, live bars)
+<KI>                  -> <KI,linkUp,pad,us1..us24[,held]>  inputs now (Learn, live bars; held: 2.36.0+)
 <KFL> / <KFL##>       -> <KFL,count> / <KFL##,name>  WAV files
 <KFR,name,offset>     -> <KFR,offset,total,hex>      read 96 bytes (total -1 = no file)
 <KFO,name,size>       -> <KFO,size>                  start an upload (events.ini, sequences.ini)
@@ -75,6 +75,13 @@ second while it is open, every 3 s over BLE):
 Firmware without it answers `<KQ>` with an error, and the panel stays hidden. The profiler is
 the shared `LoopProfiler` library, so RX-80B and T4-IMU get the same panel when they take it.
 
+Orchestron 2.36.0+ adds one last field to `<KI>`: the named buttons held now, a decimal bitmask
+(bit i = the i-th `[buttons]` line the robot loaded, in file order). `client.inputs_and_buttons()`
+returns it (None from older firmware); `inputs()` is unchanged. The Buttons tab maps the bits to
+the lines of the file the robot loaded, leaving out lines it refused; a line edited since, or
+older firmware, is decided from the channel values (`eventsini.buttons_down()`, with
+`button.deadband` converted to us from the robot's settings).
+
 Line numbers are 1-based file lines. The Events tab keys problems and fired notices to the
 line objects of the file the robot loaded, so they stay on the right row while you edit.
 
@@ -95,8 +102,8 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `profiles/` | Per-robot telemetry layout + scale table + signature keys + optional Dashboard spec (see below) |
 | `app.py` | Dear PyGui desktop UI |
 | `cli.py` | Headless REPL for scripting/smoke tests |
-| `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O): rules, modifiers, presets, activities |
-| `events_page.py` | The Events tab: rule / modifier / activity editors, Learn, live inputs, fired markers, move up/down, robot load/save |
+| `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O): rules (incl. named-button triggers and `cycle()`), buttons, modifiers, presets, activities, and the firmware's checks |
+| `events_page.py` | The Events tab: rule / button / modifier / activity editors, Learn and Capture, live inputs and button lights, fired markers, move up/down, robot load/save |
 | `tests/` | `py -m unittest discover tests`: the events.ini model, file commands and text keys against simulated robots |
 
 ## Config paging is fully generic
