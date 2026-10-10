@@ -1234,7 +1234,8 @@ def build_layout() -> None:
             # Shown when the firmware lists a "reboot" action (BallBot 0.7.2+)
             dpg.add_button(label="Reboot", tag="btn_reboot", show=False,
                            callback=lambda: dpg.configure_item("reboot_modal", show=True))
-            with dpg.tooltip("btn_reboot"):
+            # A hidden item's tooltip lands on the previous visible one, so it hides with the button
+            with dpg.tooltip("btn_reboot", tag="tip_reboot", show=False):
                 dpg.add_text("Restart the robot's board (it refuses while armed), then reconnect")
             # Shown when the firmware lists rec:toggle (Orchestron 2.27.2+)
             dpg.add_button(label="Record", tag="btn_rec", width=120, show=False,
@@ -1376,6 +1377,7 @@ def main() -> int:
         dpg.configure_item("btn_mtp", show=connected,
                            label="Exit MTP Mode" if mtp_active else "Enter MTP Mode")
         dpg.configure_item("btn_reboot", show=connected and can_reboot)
+        dpg.configure_item("tip_reboot", show=connected and can_reboot)
         dpg.configure_item("btn_rec", show=connected and can_record,
                            enabled=rec_state != 2,      # writing the CSV: wait
                            label="Stop recording" if rec_state == 1 else "Record")

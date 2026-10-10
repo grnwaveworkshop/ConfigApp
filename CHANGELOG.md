@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Enter MTP Mode is hidden while disconnected**, like Reboot and Record. It was only disabled,
   which DearPyGui doesn't grey out, so it looked clickable before there was a robot to send it to.
+- **Reboot's tooltip hides with the button.** A hidden button's tooltip attaches to the previous
+  visible one, so with MTP hidden too, hovering Connect showed "Restart the robot's board".
 
 ## [0.13.0] - 2026-10-09
 
