@@ -1230,7 +1230,7 @@ def build_layout() -> None:
                            callback=lambda: job_ble_scan())
             dpg.add_button(label="Connect", tag="btn_connect", callback=on_connect)
             dpg.add_button(label="Enter MTP Mode", tag="btn_mtp", callback=lambda: job_mtp_toggle(),
-                          enabled=False)
+                           show=False)
             # Shown when the firmware lists a "reboot" action (BallBot 0.7.2+)
             dpg.add_button(label="Reboot", tag="btn_reboot", show=False,
                            callback=lambda: dpg.configure_item("reboot_modal", show=True))
@@ -1373,7 +1373,7 @@ def main() -> int:
                     (i for i in items if HM10_DEFAULT_NAME.lower() in i.lower()), items[0]))
         dpg.set_value("status_text", status)
         dpg.configure_item("btn_connect", label="Disconnect" if connected else "Connect")
-        dpg.configure_item("btn_mtp", enabled=connected,
+        dpg.configure_item("btn_mtp", show=connected,
                            label="Exit MTP Mode" if mtp_active else "Enter MTP Mode")
         dpg.configure_item("btn_reboot", show=connected and can_reboot)
         dpg.configure_item("btn_rec", show=connected and can_record,

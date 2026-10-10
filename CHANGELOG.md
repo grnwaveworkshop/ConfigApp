@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-10-10
+
+### Fixed
+- **Enter MTP Mode is hidden while disconnected**, like Reboot and Record. It was only disabled,
+  which DearPyGui doesn't grey out, so it looked clickable before there was a robot to send it to.
+
 ## [0.13.0] - 2026-10-09
 
 ### Added (Orchestron firmware 2.37.0)
