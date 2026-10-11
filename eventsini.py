@@ -1,6 +1,7 @@
 """events.ini as an editable document (Orchestron 2.30+; activities 2.32+; named buttons,
 cycle(), stopA/B, toggleA/B, toggleaudio and rules' when=audio.NAME 2.36+; set:KEY+=N /
-set:KEY-=N and the .repeat gesture 2.37+), no UI and no I/O.
+set:KEY-=N and the .repeat gesture 2.37+; random sounds and music independent, audio:norandom /
+nomusic 2.38+), no UI and no I/O.
 
 The firmware's events.ini says what every transmitter control does: one rule per line,
 
@@ -76,8 +77,8 @@ ACTIONS: list[tuple[str, str, str | None]] = [
     ("stopaudio", "Stop audio", None),
     ("stop", "Stop everything", None),
     ("mode", "Set the motion mode", "mode"),
-    ("audio", "Sound mode", "audio"),
-    ("toggleaudio", "Sound mode on / off", "audio_on"),
+    ("audio", "Random sounds / music", "audio"),
+    ("toggleaudio", "Random sounds / music on / off", "audio_on"),
     ("preset", "Apply a preset", "preset"),
     ("set", "Change a setting", "set"),
     ("home", "Home the servos", None),
@@ -91,12 +92,14 @@ ARG_HINTS = {
 }
 ACTION_ARG = {word: arg for word, _label, arg in ACTIONS}
 ACTION_LABEL = {word: label for word, label, _arg in ACTIONS}
-AUDIO_STATES = ["manual", "random", "music"]
+# Orchestron 2.38.0+: random sounds and music are two independent switches. random / music turn
+# one on (when=: while it is on), norandom / nomusic turn it off (while it is off), manual both.
+AUDIO_STATES = ["manual", "random", "music", "norandom", "nomusic"]
 MAX_BANK = 10
 ARG_CHOICES = {
     "mode": MODES,
     "audio": AUDIO_STATES,
-    "audio_on": ["random", "music"],    # toggleaudio: manual is where it toggles back to
+    "audio_on": ["random", "music"],    # toggleaudio: that one on, or off if it is on
     "rec": ["toggle", "start", "stop"],
     "bank": [str(b) for b in range(0, MAX_BANK + 1)],
 }
@@ -535,7 +538,8 @@ def describe_action(text: str) -> str:
         return "Each time: the next of " + ", ".join(describe_action(i) for i in items)
     word, arg = split_action(text)
     if word == "audio":
-        return {"random": "Random sounds on", "music": "Music on"}.get(arg.lower(), "Random sounds / music off")
+        return {"random": "Random sounds on", "music": "Music on", "norandom": "Random sounds off",
+                "nomusic": "Music off"}.get(arg.lower(), "Random sounds / music off")
     if word == "toggleaudio" and arg.lower() in ARG_CHOICES["audio_on"]:
         return {"random": "Turn random sounds on, or off if they're on",
                 "music": "Turn music on, or off if it's on"}[arg.lower()]

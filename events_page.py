@@ -661,7 +661,9 @@ def _build_rule_editor() -> None:
         with dpg.group(horizontal=True):
             dpg.add_text("sound mode:")
             with dpg.tooltip(dpg.last_item()):
-                dpg.add_text("when=audio.NAME (Orchestron 2.36.0+): manual is neither random sounds nor music")
+                dpg.add_text("when=audio.NAME (Orchestron 2.36.0+): random / music = that one is on,
+"
+                             "norandom / nomusic = it is off (2.38.0+), manual = neither is on")
             for a in ev.AUDIO_STATES:
                 dpg.add_checkbox(label=a, tag=f"re_audio_{a}", callback=_preview)
 

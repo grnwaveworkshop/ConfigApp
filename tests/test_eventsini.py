@@ -614,10 +614,24 @@ def test_rules_when_audio():
         msg = _raises(lambda: Rule.parse("pad.1", f"home, when={bad}"), bad)
         assert msg.startswith("when=: "), msg
     assert _raises(lambda: Rule.parse("pad.1", "home, when=audio.loud")) == \
-        "when=: audio must be manual, random or music: loud"
+        "when=: audio must be manual, random, music, norandom or nomusic: loud"
     # audio.NAME isn't a modifier: no "unknown modifier" for it
     doc = EventsDoc("[events]\npad.1 = home, when=audio.music\n")
     assert not doc.rule_problems()
+
+
+def test_independent_sound_2_38():
+    # Orchestron 2.38.0: random sounds and music are independent; norandom / nomusic turn one off
+    r = Rule.parse("music", "audio:nomusic, when=audio.music")
+    assert r.actions == ["audio:nomusic"] and r.when_audio == ["music"] and r.is_state_rule()
+    assert describe_action("audio:nomusic") == "Music off"
+    assert describe_action("audio:norandom") == "Random sounds off"
+    assert describe_action("audio:manual") == "Random sounds / music off"
+    r = Rule.parse("music", "toggleB:3, when=audio.nomusic")
+    assert r.when_audio == ["nomusic"] and r.value_text() == "toggleB:3, when=audio.nomusic"
+    assert Rule.parse("ch19 mid", "audio:nomusic, audio:random").is_state_rule()
+    # toggleaudio stays random or music
+    assert _raises(lambda: Rule.parse("pad.1", "toggleaudio:nomusic")) == "toggleaudio is random or music: nomusic"
 
 
 def test_when_helpers():

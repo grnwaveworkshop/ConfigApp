@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-10-11
+
+### Changed (Orchestron firmware 2.38.0)
+- **Random sounds and music are independent.** The firmware now keeps them as two switches, so
+  random chatter can run during non-stop music. The rule and activity editors' sound tick-boxes
+  gain **norandom** and **nomusic** (while that one is off), next to manual (both off), random and
+  music (that one on); the tooltip says so. `audio:norandom` / `audio:nomusic` are new actions
+  ("Random sounds off", "Music off"). The action names read "Random sounds / music" and "Random
+  sounds / music on / off". `toggleaudio:` is still random or music.
+
 ## [0.13.1] - 2026-10-10
 
 ### Fixed
