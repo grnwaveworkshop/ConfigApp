@@ -440,8 +440,12 @@ def _connect(transport) -> None:
     if TERMINAL:
         # Before open(): the first bytes can be the boot messages the board kept for us
         b.set_console_handler(terminal_page.LOG.feed)
-        terminal_page.LOG.note(f"--- {transport.describe()} opened ---")
+        transport.set_on_open(
+            lambda: terminal_page.LOG.note(f"--- {transport.describe()} opened ---"))
     b.open()
+    # What the board kept comes in first (the port is opened without clearing it): let it
+    # arrive, so a stale reply in it is dropped by the first request, not taken as its answer
+    time.sleep(0.1)
     try:
         fw = b.ping()
         set_status(f"Loading {b.count()} params ...")

@@ -181,5 +181,18 @@ class ConsoleLogTests(unittest.TestCase):
         self.assertEqual(log.text(), "one\ntwo\nthr")
 
 
+@unittest.skipUnless(sys.platform == "win32", "the receive-buffer clear is skipped on Windows only")
+class OpenKeepingInputTests(unittest.TestCase):
+    def test_pyserial_clears_again_after_a_failed_open(self) -> None:
+        import serial
+        from serial import serialwin32
+
+        from transport import _open_keeping_input
+        purge = serialwin32.win32.PurgeComm
+        with self.assertRaises(serial.SerialException):
+            _open_keeping_input("COM_NO_SUCH_PORT", 115200)
+        self.assertIs(serialwin32.win32.PurgeComm, purge)
+
+
 if __name__ == "__main__":
     unittest.main()

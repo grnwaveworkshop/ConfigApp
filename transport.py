@@ -9,6 +9,7 @@ the callback runs on a background thread.
 """
 from __future__ import annotations
 
+import sys
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -22,10 +23,24 @@ class Transport(ABC):
     def __init__(self) -> None:
         self._on_bytes: Callable[[bytes], None] | None = None
         self._on_lost: Callable[[str], None] | None = None
+        self._on_open: Callable[[], None] | None = None
         self._failed = False          # set once the link is known-dead
 
     def set_on_bytes(self, cb: Callable[[bytes], None]) -> None:
         self._on_bytes = cb
+
+    def set_on_open(self, cb: Callable[[], None] | None) -> None:
+        """Called when open() has opened the link, before the first byte is read. The Terminal
+        tab's "opened" line goes in here, so it lands ahead of what the robot kept for us,
+        and not at all when the open fails."""
+        self._on_open = cb
+
+    def _opened(self) -> None:
+        if self._on_open:
+            try:
+                self._on_open()
+            except Exception:  # noqa: BLE001 - a log line must never stop the connect
+                pass
 
     def set_on_lost(self, cb: Callable[[str], None] | None) -> None:
         """Called once, from a background thread, when the link dies on its own.
@@ -69,6 +84,29 @@ class Transport(ABC):
 # --------------------------------------------------------------------------- #
 # USB serial (pyserial).
 # --------------------------------------------------------------------------- #
+def _open_keeping_input(port: str, baud: int):
+    """serial.Serial(port, baud) without the receive-buffer clear pyserial does on open.
+
+    A Teensy keeps what it printed while no program had its port open (its first few
+    chunks, up to 2 KB each) and hands it over the moment the port opens, just before
+    pyserial's PurgeComm. Measured on BallBot after <KA,reboot> (2026-10-12): 0 bytes with
+    the clear; the boot banner and the start of setup (660 bytes) without it. Windows only:
+    elsewhere pyserial's open flushes too, and the boot text is lost there.
+    """
+    import serial  # pyserial
+
+    if sys.platform != "win32":
+        return serial.Serial(port, baud, timeout=0.05)
+    from serial import serialwin32
+
+    purge = serialwin32.win32.PurgeComm
+    serialwin32.win32.PurgeComm = lambda *_a: True   # ports open one at a time (the io worker)
+    try:
+        return serial.Serial(port, baud, timeout=0.05)
+    finally:
+        serialwin32.win32.PurgeComm = purge
+
+
 class SerialTransport(Transport):
     def __init__(self, port: str, baud: int = 115200) -> None:
         super().__init__()
@@ -79,10 +117,9 @@ class SerialTransport(Transport):
         self._running = False
 
     def open(self) -> None:
-        import serial  # pyserial
-
         self._failed = False
-        self._ser = serial.Serial(self.port, self.baud, timeout=0.05)
+        self._ser = _open_keeping_input(self.port, self.baud)
+        self._opened()
         self._running = True
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
@@ -231,6 +268,7 @@ class BleTransport(Transport):
         def on_notify(_h, data: bytearray) -> None:
             self._emit(bytes(data))
 
+        self._opened()
         await self._client.start_notify(self._char, on_notify)
         self._ready.set()
 

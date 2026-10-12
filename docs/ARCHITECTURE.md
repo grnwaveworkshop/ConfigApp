@@ -54,10 +54,17 @@ frames, and `protocol.py` sends to the console handler everything that isn't a `
 (`K` then a capital): the text, and the HCR frames the firmware echoes there (`<QPA1>`). Those
 used to be taken for replies, so a `<QPA1>` arriving during a request was returned as its
 answer. A frame never holds a line break or a second `<`, so a `<` in console text comes back
-as text; a `<K...>` frame's own `\r\n` is dropped with it. The handler is set before the port
-opens: a Teensy keeps what it printed after USB came up (up to 8 KB) until a host opens the
-port, so the reconnect after Reboot shows the boot messages. Text printed before USB enumerates
-is lost.
+as text; a `<K...>` frame's own `\r\n` is dropped with it.
+
+Boot messages: while no program has the port open, a Teensy keeps its first four chunks of
+output (each burst of prints, up to 2 KB) and drops the rest until a host reads. It hands them
+over the moment the port opens, which is just before pyserial's open clears the receive buffer,
+so `transport.py` opens without that clear (Windows). The console handler is set before the
+port opens, and the "opened" line goes in from `set_on_open()`, ahead of that text. Measured on
+BallBot after Reboot: Windows lists the port again after 0.3 s but opens it only ~2.5 s after the
+reset; the reconnect shows the banner through the IMU's detection, and the rest of setup (printed
+while no one could read) is lost. Seeing all of it needs the firmware to wait for the port or keep
+a boot log.
 
 Orchestron 2.31.0+ adds, for the Events tab:
 

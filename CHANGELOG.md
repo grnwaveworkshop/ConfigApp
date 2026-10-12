@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] - 2026-10-12
+
+### Fixed
+- **The Terminal tab shows the boot messages after a Reboot.** It showed nothing: a Teensy hands
+  over what it printed while the port was closed the moment the port opens, and pyserial's open
+  cleared the receive buffer right then. USB ports now open without that clear (Windows). On
+  BallBot the reconnect shows the banner, the config load, Bluetooth and the IMU start; what
+  setup prints after that is lost on the board while Windows brings the port back (~2.5 s).
+- The Terminal's "opened" line is written only when the port really opened. During a Reboot's
+  reconnect the first try usually fails, and it used to say "opened" twice.
+- After opening, the app waits 0.1 s for what the robot kept before its first request, so a
+  stale reply in it can't be taken for the answer.
+
 ## [0.15.0] - 2026-10-12
 
 ### Added
