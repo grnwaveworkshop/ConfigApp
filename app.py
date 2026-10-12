@@ -4,6 +4,7 @@ connected Droid's profile (telemetry layout + scale table) is auto-detected
 after the param sweep, see profiles/__init__.py.
 
     py app.py
+    py app.py --terminal     # adds a Terminal tab: what the robot prints on its console
 
 ~200+ config params is too many for one scrolling list, so the Config tab is
 paginated: a left nav of groups derived purely from the key namespaces (see
@@ -18,6 +19,9 @@ titled panels plus rolling plots; one without gets a generic grid of
 whatever telemetry fields it streams. Firmware with a loop profiler (<KQ>,
 Orchestron 2.34+) also gets a "Loop profiler" table, polled while it is open.
 
+With --terminal, a Terminal tab shows the robot's console output (the text on the USB port
+that isn't a <K...> frame): boot messages after a Reboot, warnings, errors. terminal_page.py.
+
 Threading model: all droid I/O runs on a single background worker thread fed
 by a job queue; the render loop polls shared state, rebuilds the page when
 needed, and flushes debounced edits. Widget *creation* happens only on the
@@ -25,6 +29,7 @@ render-loop (main) thread.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import queue
 import sys
@@ -40,6 +45,7 @@ import dearpygui.dearpygui as dpg                                        # noqa:
 import events_page                                                      # noqa: E402
 import pages as pages_mod                                                # noqa: E402
 import profiles                                                          # noqa: E402
+import terminal_page                                                     # noqa: E402
 from client import RobotClient                                           # noqa: E402
 from models import TelemetryFrame, TextInfo, scale_for_key               # noqa: E402
 from protocol import ProtocolError                                       # noqa: E402
@@ -54,6 +60,7 @@ PROF_SLOW_US = 1000      # a section whose longest run is this long is shown in 
 DEFAULT_STREAM_HZ = 10
 PLOT_POINTS = 400        # rolling history per series (~20 s at 20 Hz)
 REBOOT_WAIT_S = 20.0     # how long a reboot's reconnect keeps trying (USB comes back in ~2-5 s)
+TERMINAL = False         # --terminal: the Terminal tab, and the console text kept for it
 
 
 class AppState:
@@ -250,6 +257,8 @@ def _force_disconnect(status: str) -> None:
             b.close()
         except Exception:  # noqa: BLE001
             pass
+        if TERMINAL:
+            terminal_page.LOG.note(f"--- link closed: {status} ---")
     with state.lock:
         state.connected = False
         state.params = []
@@ -428,6 +437,10 @@ def _connect(transport) -> None:
     # its own reader thread would try to join itself.
     transport.set_on_lost(
         lambda reason: io_q.put(lambda: _force_disconnect(f"Connection lost - {reason}")))
+    if TERMINAL:
+        # Before open(): the first bytes can be the boot messages the board kept for us
+        b.set_console_handler(terminal_page.LOG.feed)
+        terminal_page.LOG.note(f"--- {transport.describe()} opened ---")
     b.open()
     try:
         fw = b.ping()
@@ -1315,6 +1328,10 @@ def build_layout() -> None:
             with dpg.tab(label="Events"):
                 events_page.build()
 
+            if TERMINAL:
+                with dpg.tab(label="Terminal"):
+                    terminal_page.build()
+
     # Reboot confirmation (the top bar's Reboot button), a window of its own
     with dpg.window(label="Reboot the robot?", tag="reboot_modal", modal=True, show=False,
                     no_resize=True, width=360):
@@ -1326,8 +1343,13 @@ def build_layout() -> None:
                            callback=lambda: dpg.configure_item("reboot_modal", show=False))
 
 
-def main() -> int:
-    global io_running
+def main(argv: list[str] | None = None) -> int:
+    global io_running, TERMINAL
+    ap = argparse.ArgumentParser(description="Droid Config: settings, telemetry, actions and "
+                                             "events.ini for Orchestron, RX-80B and T4-IMU")
+    ap.add_argument("--terminal", action="store_true",
+                    help="add a Terminal tab showing what the robot prints on its console")
+    TERMINAL = ap.parse_args(argv).terminal
     events_page.init(io_put=io_q.put, get_bot=lambda: bot if link_is_up() else None,
                      set_status=set_status, param_keys=lambda: [p.key for p in state.params],
                      on_saved=job_refresh_actions)   # rules name the sequences the Actions tab lists
@@ -1437,6 +1459,8 @@ def main() -> int:
         update_plots()
 
         events_page.update()
+        if TERMINAL:
+            terminal_page.update()
         flush_dirty()
         dpg.render_dearpygui_frame()
 

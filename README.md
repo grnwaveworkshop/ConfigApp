@@ -25,6 +25,7 @@ So there's one app, and a small `profiles/` folder that tells it how to decode t
 - 🎛️ **Events** — Orchestron 2.31.0+: edit what the transmitter's switches, sticks and button pad do (`events.ini`) with dropdowns, **Learn** (move the control, it picks the channel), **Test**, the robot's own check of every line, and a live *fired* marker per rule. Works offline on a file too. 0.9.0 adds an **Activities** tab (random sounds, music playlists, sequences picked now and then, AUTO idle motion) and moving rules up and down. 0.12.0 (Orchestron 2.36.0) adds a **Buttons** tab: named buttons on any channel, each with a live *down* light, and **Capture** (hold the transmitter button, press Capture) to take its channel and value; rules use them with click / double / long / release and banks, and `cycle(...)` takes turns between 2 or 3 actions. 0.13.0 (Orchestron 2.37.0) adds the **repeat** gesture (fires again and again while a button is held, like a key's auto-repeat) and `set:KEY+=N` / `set:KEY-=N` (raise or lower a setting by a step, stopping at its range), for volume up / down buttons. 0.14.0 (Orchestron 2.38.0): random sounds and music are independent switches, so chatter can run during non-stop music; rules and activities can test `norandom` / `nomusic` (that one off).
 - 📂 **Text settings with dropdowns** — firmware with text keys (`<KX>`, BallBot 0.7.9+) gets a dropdown of the robot's own choices on the key's page, with what the robot did beside it. BallBot's `ctrl.policy.file` lists the learned policies on its SD card; picking one loads it (disarmed) and **Rescan** looks again after you copy files over.
 - 🔁 **Reboot** — robots whose action list has `reboot` (BallBot 0.7.2+) get a **Reboot** button in the top bar: it asks first, restarts the board (refused while armed) and reconnects by itself, over USB or BLE.
+- 📟 **Terminal** — start with `py app.py --terminal` for a **Terminal** tab: what the robot prints on its console (boot messages after a Reboot, warnings, errors, `[REMOTE]` lines), which no serial monitor can show while the app holds the port. Follows the newest line; Copy all and Save.
 - ✅ **Real send/confirm feedback** — you see *sending...* the instant you move a slider, and a clear ✓/✗ once the board actually replies. No more wondering if a change "took."
 - ⚠️ **Unsaved-changes banner** — config edits are live/RAM-only until you hit **Save to SD**; a persistent warning reminds you it isn't durable yet.
 - 📶 **USB or BLE** — wired serial, or wireless to an HM-10 class module (BallBot's `bt.*` link). Same protocol, same app; pick BLE in the connect bar or pass `--ble` to the CLI.
@@ -38,6 +39,7 @@ pip install -r requirements.txt
 
 # GUI
 py app.py
+py app.py --terminal      # plus a Terminal tab: the robot's console output
 
 # or headless CLI
 py cli.py --list          # see available COM ports

@@ -308,6 +308,11 @@ class RobotClient:
 
         self.proto.set_notice_handler(_wrap)
 
+    def set_console_handler(self, cb: Callable[[str], None] | None) -> None:
+        """cb(text) for what the robot prints on its console (USB), in chunks as it arrives;
+        runs on the transport's reader thread. Set it before open() to catch the first lines."""
+        self.proto.set_console_handler(cb)
+
     # -- loop profiler (Orchestron 2.34+) ------------------------------------ #
     def profiler(self, command: str = "") -> ProfilerStatus | None:
         """<KQ>: the profiler's state. command "R" resets it first, "E1" / "E0" switches it

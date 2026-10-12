@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-10-12
+
+### Added
+- **Terminal tab:** `py app.py --terminal` adds a tab showing what the robot prints on its
+  console: boot messages after a Reboot, warnings (amber), errors (red), `[REMOTE]` lines, the
+  profiler's reports. While the app holds the COM port no serial monitor can open it, so this
+  is the only way to see them while connected. The log runs across reconnects, with a grey line
+  where the link closed and opened. It follows the newest line until you scroll up; **Clear**,
+  **Copy all**, and **Save** (a text file in `~/.droid_config/terminal/`). Read-only. Over BLE it
+  shows only what the robot sends to that port (Orchestron's console is USB). Without the flag
+  the app is as before.
+
+### Fixed
+- **The app starts again:** 0.14.0's sound-mode tooltip in the rule editor had a line break
+  inside its string, so `events_page.py` didn't compile and `py app.py` stopped at a
+  SyntaxError.
+- **An HCR frame is no longer taken for a reply.** Orchestron echoes HCR replies on the USB
+  console (`<QPA1>` when WAV A starts); one arriving while a request waited was returned as its
+  answer. Only `<K...>` frames are replies now; the rest is console text.
+- A `<` in console text no longer swallows the next frame: a frame ends at a line break or a
+  second `<`, so `speed < 5` is text and the frame after it still arrives.
+
+### Tests
+- `tests/test_console.py`: text and frames in order, split across reads (a frame, a UTF-8
+  character, a frame's `\r` and `\n`); `<` in text; overlong frames; which frames are the
+  protocol's; an HCR echo and console text in the same read as the reply; frames' line breaks
+  dropped but the robot's blank lines kept; the line log (partial lines, the app's lines, the
+  3000-line cap, Clear, Copy text).
+
 ## [0.14.0] - 2026-10-11
 
 ### Changed (Orchestron firmware 2.38.0)

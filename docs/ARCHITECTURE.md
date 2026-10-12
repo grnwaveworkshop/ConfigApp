@@ -48,6 +48,17 @@ Firmware without `<KX>` answers with an error frame and shows no text keys.
 button: `<KA,reboot>`, then the app drops the link, waits for the robot (USB: until its port is
 back), and connects again.
 
+**Console text (Terminal tab, `py app.py --terminal`).** On USB the robot's console
+(`Serial.print`) shares the port with the replies. `framing.py` returns it in order with the
+frames, and `protocol.py` sends to the console handler everything that isn't a `<K...>` frame
+(`K` then a capital): the text, and the HCR frames the firmware echoes there (`<QPA1>`). Those
+used to be taken for replies, so a `<QPA1>` arriving during a request was returned as its
+answer. A frame never holds a line break or a second `<`, so a `<` in console text comes back
+as text; a `<K...>` frame's own `\r\n` is dropped with it. The handler is set before the port
+opens: a Teensy keeps what it printed after USB came up (up to 8 KB) until a host opens the
+port, so the reconnect after Reboot shows the boot messages. Text printed before USB enumerates
+is lost.
+
 Orchestron 2.31.0+ adds, for the Events tab:
 
 ```
@@ -93,9 +104,11 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 
 | File | Responsibility |
 |---|---|
-| `framing.py` | Byte-level `<...>` frame reader, mirrors the firmware's `SerialPacket.hpp` |
+| `framing.py` | Byte-level `<...>` frame reader, mirrors the firmware's `SerialPacket.hpp`; returns the console text between frames too |
 | `transport.py` | `SerialTransport` (pyserial) and `BleTransport` (bleak, HM-10) behind a `Transport` ABC |
-| `protocol.py` | Request/reply correlation + telemetry routing on top of a transport |
+| `protocol.py` | Request/reply correlation + telemetry routing on top of a transport; everything not `<K...>` to the console handler |
+| `console.py` | `ConsoleLog`: the console text as lines (thread-safe, last 3000), with the app's own link lines |
+| `terminal_page.py` | The Terminal tab (`--terminal`): the log, following the newest line; Clear, Copy all, Save |
 | `client.py` | `RobotClient` - high-level get/set/save/reload/stream API |
 | `models.py` | `ParamInfo`, `TextInfo`, `TelemetryFrame` - reads scale/telemetry layout from `profiles.active` |
 | `pages.py` | Turns the flat param list into nav pages, purely from key-prefix structure |
@@ -104,7 +117,7 @@ connection via `<KC>` + a `<KN##>` sweep; nothing is hardcoded client-side.
 | `cli.py` | Headless REPL for scripting/smoke tests |
 | `eventsini.py` | Orchestron's `events.ini` as an editable, round-trip-safe document (no UI, no I/O): rules (incl. named-button triggers and `cycle()`), buttons, modifiers, presets, activities, and the firmware's checks |
 | `events_page.py` | The Events tab: rule / button / modifier / activity editors, Learn and Capture, live inputs and button lights, fired markers, move up/down, robot load/save |
-| `tests/` | `py -m unittest discover tests`: the events.ini model, file commands and text keys against simulated robots |
+| `tests/` | `py -m unittest discover tests`: the events.ini model, file commands, text keys and the console text against simulated robots |
 
 ## Config paging is fully generic
 
