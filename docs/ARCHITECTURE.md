@@ -51,7 +51,7 @@ back), and connects again.
 **Console text (Terminal tab, `py app.py --terminal`).** On USB the robot's console
 (`Serial.print`) shares the port with the replies. `framing.py` returns it in order with the
 frames, and `protocol.py` sends to the console handler everything that isn't a `<K...>` frame
-(`K` then a capital): the text, and the HCR frames the firmware echoes there (`<QPA1>`). Those
+(`K` then a capital): the text, and the other sets' frames the firmware echoes there (`<QPA1>`). Those
 used to be taken for replies, so a `<QPA1>` arriving during a request was returned as its
 answer. A frame never holds a line break or a second `<`, so a `<` in console text comes back
 as text; a `<K...>` frame's own `\r\n` is dropped with it.

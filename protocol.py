@@ -6,7 +6,7 @@ frames into telemetry (<KT,...>, dispatched to a handler) vs command replies
 which is plenty for a config app / dashboard.
 
 Anything that isn't a <K...> frame is the robot's console: the text it prints,
-and the HCR frames it echoes there (<QPA1> when WAV A starts). That goes to the
+and the query replies it echoes there (<QPA1> when WAV A starts). That goes to the
 console handler (the Terminal tab), never to request(): a <QPA1> arriving while
 a request waits would otherwise be taken as its reply.
 
@@ -43,7 +43,7 @@ class ProtocolError(Exception):
 
 def is_protocol_frame(frame: str) -> bool:
     """A <K...> reply, telemetry or notice: the category letter, then a capital (KP, KT, KE).
-    "<K...>" in a help text and HCR frames (QPA1) are not."""
+    "<K...>" in a help text and the other sets' frames (QPA1) are not."""
     return len(frame) >= 2 and frame[0] == CATEGORY and frame[1].isupper()
 
 
@@ -86,7 +86,7 @@ class Protocol:
                     self._on_console(text)
                 continue
             frame = payload
-            if not is_protocol_frame(frame):      # an HCR echo, or <...> in a help text
+            if not is_protocol_frame(frame):      # a query reply's echo, or <...> in a help text
                 self._eol_left = ""
                 if self._on_console:
                     self._on_console(f"<{frame}>")

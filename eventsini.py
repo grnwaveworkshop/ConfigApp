@@ -58,7 +58,7 @@ COND_LABELS = {
 
 # (action word, label, what its argument is: None, "seq", "wav", "bank", "random" (a bank or
 #  FIRST-LAST), "mode", "audio", "audio_on" (random or music), "preset", "set" (KEY=VALUE, or
-#  KEY+=N / KEY-=N: see split_set()), "rec")
+#  KEY+=N / KEY-=N: see split_set()), "rec", "recwav")
 # stopA / stopB, toggleA / toggleB and toggleaudio: Orchestron 2.36.0+
 ACTIONS: list[tuple[str, str, str | None]] = [
     ("seq", "Play sequence", "seq"),
@@ -83,6 +83,7 @@ ACTIONS: list[tuple[str, str, str | None]] = [
     ("set", "Change a setting", "set"),
     ("home", "Home the servos", None),
     ("rec", "Recorder", "rec"),
+    ("recwav", "Audio recorder", "recwav"),     # Orchestron 2.41.0+
 ]
 ARG_HINTS = {
     "random": "a bank (2) or numbers (2001-2013)",
@@ -101,6 +102,13 @@ ARG_CHOICES = {
     "audio": AUDIO_STATES,
     "audio_on": ["random", "music"],    # toggleaudio: that one on, or off if it is on
     "rec": ["toggle", "start", "stop"],
+    "recwav": ["toggle", "start", "stop", "play"],
+}
+# Every word the firmware takes (EventRulesParse.cpp kRecNames / kRecWavNames): status too, which
+# a rule has no use for, so the menus above leave it out
+ARG_WORDS = {
+    "rec": ["start", "stop", "toggle", "status"],
+    "recwav": ["start", "stop", "toggle", "status", "play"],
     "bank": [str(b) for b in range(0, MAX_BANK + 1)],
 }
 
@@ -461,6 +469,8 @@ def check_action(text: str, settings: dict[str, tuple[int, int]] | None = None) 
         _int(arg, 0, MAX_BANK, f"{word} bank")
     elif kind in ("mode", "audio", "audio_on") and arg.lower() not in ARG_CHOICES[kind]:
         raise EventsError(f"{word} is {_one_of(ARG_CHOICES[kind])}: {arg}")
+    elif kind in ARG_WORDS and arg.lower() not in ARG_WORDS[kind]:
+        raise EventsError(f"{word} is {_one_of(ARG_WORDS[kind])}: {arg}")
     elif kind == "set":
         check_set(arg, settings)
 

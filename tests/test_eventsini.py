@@ -571,6 +571,18 @@ def test_toggle_a_bank():
     assert _raises(lambda: check_action("toggleA:11")) == "toggleA bank must be 0-10, not 11"
 
 
+def test_recorder_words():
+    """rec: and recwav: (Orchestron 2.41.0) take the words the firmware does (OR-060)."""
+    for good in ["rec:start", "rec:stop", "rec:toggle", "rec:status", "recwav:start", "recwav:stop",
+                 "recwav:toggle", "recwav:play", "recwav:status", "RECWAV:Play"]:
+        check_action(good)
+    for bad in ["recwav:go", "recwav:", "rec:play", "rec:record"]:
+        _raises(lambda: check_action(bad), bad)
+    assert _raises(lambda: check_action("recwav:go")).startswith("recwav is ")
+    r = Rule.parse("ch21 high", "recwav:start")
+    assert flat_actions(r.actions) == ["recwav:start"]
+
+
 def test_toggle_the_sound_mode():
     assert split_action("TOGGLEAUDIO:Music") == ("toggleaudio", "Music")
     assert join_action("toggleaudio", "random") == "toggleaudio:random"

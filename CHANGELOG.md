@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.2] - 2026-11-01
+
+### Fixed
+- **`recwav:` rules read** (Orchestron 2.41.0's audio recorder, OR-060): the Events tab took
+  `ch21 high = recwav:start` for a problem and `test_shipped_files` refused SDCardTest. `recwav`
+  is an action now ("Audio recorder": toggle, start, stop, play), and `rec:` / `recwav:` check
+  their word against the firmware's (status too).
+
+### Tests
+- `test_recorder_words`: every `rec:` / `recwav:` word the firmware takes, and ones it refuses.
+
 ## [0.15.1] - 2026-10-12
 
 ### Fixed
@@ -31,7 +42,7 @@ All notable changes to this project will be documented in this file.
 - **The app starts again:** 0.14.0's sound-mode tooltip in the rule editor had a line break
   inside its string, so `events_page.py` didn't compile and `py app.py` stopped at a
   SyntaxError.
-- **An HCR frame is no longer taken for a reply.** Orchestron echoes HCR replies on the USB
+- **A query reply's echo is no longer taken for a reply.** Orchestron echoes its query replies on the USB
   console (`<QPA1>` when WAV A starts); one arriving while a request waited was returned as its
   answer. Only `<K...>` frames are replies now; the rest is console text.
 - A `<` in console text no longer swallows the next frame: a frame ends at a line break or a
@@ -40,7 +51,7 @@ All notable changes to this project will be documented in this file.
 ### Tests
 - `tests/test_console.py`: text and frames in order, split across reads (a frame, a UTF-8
   character, a frame's `\r` and `\n`); `<` in text; overlong frames; which frames are the
-  protocol's; an HCR echo and console text in the same read as the reply; frames' line breaks
+  protocol's; a query echo and console text in the same read as the reply; frames' line breaks
   dropped but the robot's blank lines kept; the line log (partial lines, the app's lines, the
   3000-line cap, Clear, Copy text).
 

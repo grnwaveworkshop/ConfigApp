@@ -1,5 +1,5 @@
 """The robot's console text next to the <K...> frames (the Terminal tab, app.py --terminal):
-framing.py hands it back in order, protocol.py keeps it (and HCR echoes) out of the replies,
+framing.py hands it back in order, protocol.py keeps it (and query echoes) out of the replies,
 console.py turns it into lines.
 Run: py -m unittest discover tests"""
 from __future__ import annotations
@@ -58,7 +58,7 @@ class ProtocolFrameTests(unittest.TestCase):
 
 
 class FakeOrchestron(Transport):
-    """Answers <KP> after printing on its console and echoing an HCR reply, all in one read,
+    """Answers <KP> after printing on its console and echoing a query reply, all in one read,
     as Orchestron does when WAV A starts while ConfigApp pings."""
 
     def open(self) -> None: ...
